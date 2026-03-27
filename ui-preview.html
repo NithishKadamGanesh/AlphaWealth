@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AlphaTrade Engine — Trading Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e17;--panel:#111827;--border:#1e293b;--accent:#00e5a0;--red:#ef4444;--green:#00e5a0;--yellow:#fbbf24;--blue:#3b82f6;--muted:#64748b;--text:#e2e8f0;--panel-header:linear-gradient(180deg,#1a2332 0%,#111827 100%)}
+body{background:var(--bg);color:var(--text);font-family:'DM Sans',system-ui,sans-serif;overflow:hidden;height:100vh}
+.mono{font-family:'JetBrains Mono',monospace}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:var(--panel)}::-webkit-scrollbar-thumb{background:#334155;border-radius:2px}
+.scanline{pointer-events:none;position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,229,160,0.008) 2px,rgba(0,229,160,0.008) 4px);z-index:999}
+.glow-g{text-shadow:0 0 8px rgba(0,229,160,0.5)}.glow-r{text-shadow:0 0 8px rgba(239,68,68,0.5)}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column}
+.ph{background:var(--panel-header);border-bottom:1px solid var(--border);padding:8px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:8px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(0,229,160,0.2)}50%{box-shadow:0 0 20px 4px rgba(0,229,160,0.15)}}
+@keyframes slideUp{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}
+@keyframes flash{0%{background:rgba(0,229,160,0.2)}100%{background:transparent}}
+.slide-up{animation:slideUp .3s ease-out}.row-flash{animation:flash 1s ease-out}
+input,select{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;padding:6px 10px;outline:none;transition:border-color .2s;width:100%}
+input:focus,select:focus{border-color:var(--accent)}
+button{cursor:pointer;border:none;outline:none;font-family:inherit}
+.grid-main{flex:1;display:grid;grid-template-columns:280px 1fr 280px;grid-template-rows:1fr 280px;gap:6px;padding:6px;padding-top:0;min-height:0}
+.col-l{grid-row:1/3;display:flex;flex-direction:column;gap:6px;min-height:0}
+.col-c-top{min-height:0}.col-c-bot{min-height:0}
+.col-r{grid-row:1/3;display:flex;flex-direction:column;gap:6px;min-height:0}
+.overflow-y{overflow-y:auto;flex:1;min-height:0}
+</style>
+</head>
+<body>
+<div class="scanline"></div>
+<div style="height:100vh;display:flex;flex-direction:column">
+
+<!-- HEADER -->
+<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--panel)">
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <div style="width:8px;height:8px;rotate:45deg;background:var(--accent)"></div>
+      <span class="mono glow-g" style="font-size:13px;font-weight:600;letter-spacing:.15em;color:var(--accent)">ALPHATRADE</span>
+      <span class="mono" style="font-size:10px;color:var(--muted);letter-spacing:.1em">ENGINE v1.0</span>
+    </div>
+    <div style="height:16px;width:1px;background:var(--border);margin:0 4px"></div>
+    <div style="display:flex;gap:4px" id="sym-btns"></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <div id="notif" style="display:none" class="slide-up"></div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <div style="width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s ease-in-out infinite"></div>
+      <span class="mono" style="font-size:10px;color:var(--muted)">LIVE FEED</span>
+    </div>
+    <span class="mono" style="font-size:11px;color:var(--muted)" id="clock"></span>
+  </div>
+</div>
+
+<!-- MAIN GRID -->
+<div class="grid-main">
+
+  <!-- LEFT: Order Entry + Book -->
+  <div class="col-l">
+    <!-- Order Entry -->
+    <div class="panel" style="flex:none">
+      <div class="ph"><div class="dot"></div>Order Entry</div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:10px">
+        <div><label class="mono" style="font-size:10px;color:var(--muted);letter-spacing:.08em;display:block;margin-bottom:4px">ACCOUNT</label><input id="account" value="TRADER-1" /></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-radius:4px;padding:8px 12px;border:1px solid var(--border)">
+          <span class="mono" style="font-size:18px;font-weight:700" id="sym-display">AAPL</span>
+          <span class="mono" style="font-size:10px;color:var(--muted)">EQUITY</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+          <button id="btn-buy" onclick="setSide('BUY')" style="padding:8px;border-radius:4px;font-weight:600;font-size:13px;transition:.2s" class="mono">BUY</button>
+          <button id="btn-sell" onclick="setSide('SELL')" style="padding:8px;border-radius:4px;font-weight:600;font-size:13px;transition:.2s" class="mono">SELL</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><label class="mono" style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">TYPE</label><select id="otype"><option>LIMIT</option><option>MARKET</option></select></div>
+          <div><label class="mono" style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">TIF</label><select id="tif"><option>DAY</option><option>IOC</option><option>FOK</option></select></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><label class="mono" style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">QTY</label><input id="qty" type="number" value="100" /></div>
+          <div id="price-wrap"><label class="mono" style="font-size:10px;color:var(--muted);display:block;margin-bottom:4px">PRICE</label><input id="price" type="number" value="150.00" step="0.01" /></div>
+        </div>
+        <div style="display:flex;gap:4px" id="quick-qty"></div>
+        <div id="notional" class="mono" style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:4px;background:var(--bg);border:1px solid var(--border);font-size:11px"><span style="color:var(--muted)">NOTIONAL</span><span id="notional-val" style="color:var(--text)">$15,000.00</span></div>
+        <button id="submit-btn" onclick="submitOrder()" class="mono" style="width:100%;padding:10px;border-radius:4px;font-size:13px;font-weight:700;letter-spacing:.1em;transition:.15s">BUY AAPL</button>
+        <div id="status-msg" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Order Book -->
+    <div class="panel" style="flex:1;min-height:0">
+      <div class="ph"><div class="dot"></div><span id="book-title">Order Book — AAPL</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;padding:4px 12px;border-bottom:1px solid var(--border)">
+        <span class="mono" style="font-size:9px;color:var(--muted);letter-spacing:.06em">PRICE</span>
+        <span class="mono" style="font-size:9px;color:var(--muted);text-align:right">QTY</span>
+        <span class="mono" style="font-size:9px;color:var(--muted);text-align:right">ORDERS</span>
+      </div>
+      <div class="overflow-y" id="book-content"></div>
+    </div>
+  </div>
+
+  <!-- CENTER TOP: Chart -->
+  <div class="col-c-top panel">
+    <div class="ph" style="justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:8px"><div class="dot"></div><span id="chart-title">Price — AAPL</span></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="mono" style="font-size:14px;font-weight:600" id="last-price">$150.00</span>
+        <span class="mono" style="font-size:11px;color:var(--green)" id="price-change">+0.00 (0.000%)</span>
+      </div>
+    </div>
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:16px;position:relative" id="chart-area">
+      <canvas id="chart-canvas" style="width:100%;height:100%"></canvas>
+    </div>
+  </div>
+
+  <!-- CENTER BOTTOM: Trade Blotter -->
+  <div class="col-c-bot panel">
+    <div class="ph" style="justify-content:space-between"><div style="display:flex;align-items:center;gap:8px"><div class="dot"></div>Trade Blotter</div><span class="mono" style="font-size:10px;color:var(--muted)" id="fill-count">0 fills</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 0.6fr 0.8fr 0.8fr 1fr .8fr;padding:4px 12px;border-bottom:1px solid var(--border)">
+      <span class="mono" style="font-size:9px;color:var(--muted)">TIME</span><span class="mono" style="font-size:9px;color:var(--muted)">SYMBOL</span><span class="mono" style="font-size:9px;color:var(--muted)">SIDE</span><span class="mono" style="font-size:9px;color:var(--muted);text-align:right">QTY</span><span class="mono" style="font-size:9px;color:var(--muted);text-align:right">PRICE</span><span class="mono" style="font-size:9px;color:var(--muted);text-align:right">NOTIONAL</span><span class="mono" style="font-size:9px;color:var(--muted)">ID</span>
+    </div>
+    <div class="overflow-y" id="blotter"></div>
+  </div>
+
+  <!-- RIGHT: Positions + Order Feed + System -->
+  <div class="col-r">
+    <!-- Positions -->
+    <div class="panel" style="flex:1;min-height:0">
+      <div class="ph" style="justify-content:space-between"><div style="display:flex;align-items:center;gap:8px"><div class="dot"></div>Positions</div><span class="mono" style="font-size:11px;font-weight:600" id="total-pnl">PnL: +0.00</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr .7fr .8fr .8fr;padding:4px 12px;border-bottom:1px solid var(--border)">
+        <span class="mono" style="font-size:9px;color:var(--muted)">ACCT</span><span class="mono" style="font-size:9px;color:var(--muted)">SYM</span><span class="mono" style="font-size:9px;color:var(--muted);text-align:right">QTY</span><span class="mono" style="font-size:9px;color:var(--muted);text-align:right">AVG PX</span><span class="mono" style="font-size:9px;color:var(--muted);text-align:right">PNL</span>
+      </div>
+      <div class="overflow-y" id="positions"></div>
+    </div>
+
+    <!-- Order Feed -->
+    <div class="panel" style="height:200px;flex:none">
+      <div class="ph"><div class="dot"></div>Order Feed</div>
+      <div class="overflow-y" id="order-feed"></div>
+    </div>
+
+    <!-- System -->
+    <div class="panel" style="height:100px;flex:none">
+      <div class="ph"><div class="dot"></div>System</div>
+      <div style="padding:8px 12px;display:flex;flex-direction:column;justify-content:space-between;flex:1">
+        <div style="display:flex;justify-content:space-between"><span class="mono" style="font-size:10px;color:var(--muted)">WS Feed</span><span class="mono" style="font-size:10px;color:var(--green)">● CONNECTED</span></div>
+        <div style="display:flex;justify-content:space-between"><span class="mono" style="font-size:10px;color:var(--muted)">Session</span><span class="mono" style="font-size:10px;color:var(--text)" id="uptime">00:00:00</span></div>
+        <div style="display:flex;justify-content:space-between"><span class="mono" style="font-size:10px;color:var(--muted)">Fills</span><span class="mono" style="font-size:10px;color:var(--accent)" id="sys-fills">0</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+// ─── State ───
+let side='BUY',sym='AAPL',trades=[],positions={},orders=[],bookBids=[],bookAsks=[],priceHistory=[],fillCount=0;
+const SYMS=['AAPL','GOOGL','MSFT','AMZN','TSLA','NVDA'];
+const startTime=Date.now();
+
+// ─── Init UI ───
+function init(){
+  // Symbol buttons
+  const sb=document.getElementById('sym-btns');
+  SYMS.forEach(s=>{const b=document.createElement('button');b.textContent=s;b.className='mono';b.style.cssText=`padding:2px 8px;border-radius:4px;font-size:10px;transition:.2s;border:1px solid transparent;background:transparent;color:var(--muted)`;b.onclick=()=>setSymbol(s);sb.appendChild(b);});
+  // Quick qty
+  const qq=document.getElementById('quick-qty');
+  [50,100,500,1000,5000].forEach(q=>{const b=document.createElement('button');b.textContent=q>=1000?(q/1000)+'K':q;b.className='mono';b.style.cssText=`flex:1;padding:4px;border-radius:4px;font-size:10px;color:var(--muted);background:var(--bg);border:1px solid var(--border);transition:.2s`;b.onmouseenter=()=>{b.style.borderColor='rgba(0,229,160,0.3)';b.style.color='var(--accent)'};b.onmouseleave=()=>{b.style.borderColor='var(--border)';b.style.color='var(--muted)'};b.onclick=()=>{document.getElementById('qty').value=q;updateNotional()};qq.appendChild(b)});
+  setSide('BUY');setSymbol('AAPL');
+  setInterval(updateClock,1000);updateClock();
+  setInterval(updateUptime,1000);
+  document.getElementById('qty').addEventListener('input',updateNotional);
+  document.getElementById('price').addEventListener('input',updateNotional);
+  // Simulate initial data
+  setTimeout(simulateInitialData,500);
+}
+
+function setSide(s){
+  side=s;
+  const bb=document.getElementById('btn-buy'),bs=document.getElementById('btn-sell'),sb=document.getElementById('submit-btn');
+  if(s==='BUY'){bb.style.cssText+='background:rgba(0,229,160,0.15);color:var(--green);border:1px solid rgba(0,229,160,0.3)';bs.style.cssText+='background:var(--bg);color:var(--muted);border:1px solid var(--border)';sb.style.background='var(--green)';sb.style.color='var(--bg)'}
+  else{bs.style.cssText+='background:rgba(239,68,68,0.15);color:var(--red);border:1px solid rgba(239,68,68,0.3)';bb.style.cssText+='background:var(--bg);color:var(--muted);border:1px solid var(--border)';sb.style.background='var(--red)';sb.style.color='white'}
+  sb.textContent=s+' '+sym;
+}
+function setSymbol(s){
+  sym=s;document.getElementById('sym-display').textContent=s;document.getElementById('book-title').textContent='Order Book — '+s;document.getElementById('chart-title').textContent='Price — '+s;
+  document.getElementById('submit-btn').textContent=side+' '+s;
+  document.querySelectorAll('#sym-btns button').forEach(b=>{if(b.textContent===s){b.style.background='rgba(0,229,160,0.15)';b.style.color='var(--accent)';b.style.borderColor='rgba(0,229,160,0.3)'}else{b.style.background='transparent';b.style.color='var(--muted)';b.style.borderColor='transparent'}});
+  renderBook();renderChart();
+}
+function updateNotional(){const q=parseFloat(document.getElementById('qty').value)||0,p=parseFloat(document.getElementById('price').value)||0;document.getElementById('notional-val').textContent='$'+(q*p).toLocaleString('en-US',{minimumFractionDigits:2})}
+function updateClock(){const n=new Date();document.getElementById('clock').innerHTML=n.toLocaleTimeString('en-US',{hour12:false})+' <span style="color:var(--border)">UTC'+(n.getTimezoneOffset()>0?'-':'+')+Math.abs(n.getTimezoneOffset()/60)+'</span>'}
+function updateUptime(){const s=Math.floor((Date.now()-startTime)/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;document.getElementById('uptime').textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0')}
+
+// ─── Simulated Order Submission ───
+function submitOrder(){
+  const acct=document.getElementById('account').value||'TRADER-1';
+  const q=parseInt(document.getElementById('qty').value);
+  const p=parseFloat(document.getElementById('price').value);
+  const t=document.getElementById('otype').value;
+  const tif=document.getElementById('tif').value;
+  const oid='ORD-'+Math.random().toString(36).substr(2,8).toUpperCase();
+  showStatus(true,oid+' accepted');
+  addOrderEvent(oid,sym,side,'NEW');
+  setTimeout(()=>addOrderEvent(oid,sym,side,'ACCEPTED'),300);
+
+  // Simulate matching against the book
+  if(side==='BUY'&&bookAsks.length>0&&(t==='MARKET'||p>=bookAsks[0].price)){
+    const matchPx=bookAsks[0].price;const matchQty=Math.min(q,bookAsks[0].qty);
+    bookAsks[0].qty-=matchQty;if(bookAsks[0].qty<=0)bookAsks.shift();
+    const tid='TRD-'+Date.now()+'-'+(++fillCount);
+    addTrade(tid,oid,acct,sym,'BUY',matchQty,matchPx);addOrderEvent(oid,sym,side,'FILLED');
+    updatePosition(acct,sym,matchQty,matchPx,'BUY');showNotif('FILL '+sym+' '+matchQty+'@'+matchPx.toFixed(2));
+  }else if(side==='SELL'&&bookBids.length>0&&(t==='MARKET'||p<=bookBids[0].price)){
+    const matchPx=bookBids[0].price;const matchQty=Math.min(q,bookBids[0].qty);
+    bookBids[0].qty-=matchQty;if(bookBids[0].qty<=0)bookBids.shift();
+    const tid='TRD-'+Date.now()+'-'+(++fillCount);
+    addTrade(tid,oid,acct,sym,'SELL',matchQty,matchPx);addOrderEvent(oid,sym,side,'FILLED');
+    updatePosition(acct,sym,matchQty,matchPx,'SELL');showNotif('FILL '+sym+' '+matchQty+'@'+matchPx.toFixed(2));
+  }else if(t==='LIMIT'&&tif==='DAY'){
+    if(side==='BUY'){bookBids.push({price:p,qty:q,orders:1});bookBids.sort((a,b)=>b.price-a.price)}
+    else{bookAsks.push({price:p,qty:q,orders:1});bookAsks.sort((a,b)=>a.price-b.price)}
+  }
+  renderBook();renderChart();
+}
+
+function addTrade(tid,oid,acct,symbol,s,qty,price){
+  const ts=new Date().toISOString();
+  trades.unshift({tradeId:tid,orderId:oid,accountId:acct,symbol:symbol,side:s,qty:qty,price:price,ts:ts,_live:true});
+  if(trades.length>100)trades.pop();
+  priceHistory.push({ts:Date.now(),price:price,qty:qty,side:s,symbol:symbol});
+  renderBlotter();document.getElementById('sys-fills').textContent=fillCount;document.getElementById('fill-count').textContent=fillCount+' fills';
+}
+
+function addOrderEvent(oid,symbol,s,status){
+  const icons={NEW:'○',ACCEPTED:'◎',REJECTED:'✗',FILLED:'●',PARTIALLY_FILLED:'◐',CANCELLED:'⊘'};
+  const colors={NEW:'var(--blue)',ACCEPTED:'var(--accent)',REJECTED:'var(--red)',FILLED:'var(--green)',PARTIALLY_FILLED:'var(--yellow)',CANCELLED:'var(--muted)'};
+  orders.unshift({oid,symbol,side:s,status,ts:new Date(),icon:icons[status]||'?',color:colors[status]||'var(--muted)'});
+  if(orders.length>50)orders.pop();renderOrderFeed();
+}
+
+function updatePosition(acct,symbol,qty,price,s){
+  const key=acct+'|'+symbol;
+  if(!positions[key])positions[key]={accountId:acct,symbol:symbol,qty:0,avgPx:0,pnl:0,buyQty:0,sellQty:0};
+  const pos=positions[key];
+  if(s==='BUY'){const cost=pos.avgPx*pos.qty+price*qty;pos.qty+=qty;pos.avgPx=pos.qty>0?cost/pos.qty:0;pos.buyQty+=qty}
+  else{if(pos.qty>0)pos.pnl+=(price-pos.avgPx)*qty;pos.qty-=qty;pos.sellQty+=qty}
+  renderPositions();
+}
+
+function showStatus(ok,msg){
+  const el=document.getElementById('status-msg');el.style.display='block';
+  el.className='mono slide-up';el.style.cssText+=`font-size:11px;padding:6px 10px;border-radius:4px;border:1px solid ${ok?'rgba(0,229,160,0.2)':'rgba(239,68,68,0.2)'};background:${ok?'rgba(0,229,160,0.05)':'rgba(239,68,68,0.05)'};color:${ok?'var(--green)':'var(--red)'}`;
+  el.textContent=(ok?'✓ ':'✗ ')+msg;setTimeout(()=>el.style.display='none',3000);
+}
+function showNotif(msg){
+  const el=document.getElementById('notif');el.style.display='flex';el.style.cssText='display:flex;align-items:center;gap:8px;padding:4px 12px;border-radius:4px;background:rgba(0,229,160,0.1);border:1px solid rgba(0,229,160,0.2)';
+  el.innerHTML='<div style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 1s infinite"></div><span class="mono" style="font-size:11px;color:var(--accent)">'+msg+'</span>';
+  setTimeout(()=>el.style.display='none',4000);
+}
+
+// ─── Renderers ───
+function renderBook(){
+  const c=document.getElementById('book-content');
+  const allQtys=[...bookBids,...bookAsks].map(l=>l.qty);const max=Math.max(...allQtys,1);
+  let html='';
+  // Asks reversed
+  const revAsks=[...bookAsks].reverse();
+  revAsks.forEach(l=>{html+=`<div style="position:relative;display:grid;grid-template-columns:1fr 1fr 1fr;padding:2px 12px"><div style="position:absolute;right:0;top:0;bottom:0;background:rgba(239,68,68,0.08);width:${(l.qty/max)*100}%"></div><span class="mono" style="font-size:11px;color:var(--red);position:relative">${l.price.toFixed(2)}</span><span class="mono" style="font-size:11px;text-align:right;position:relative">${l.qty.toLocaleString()}</span><span class="mono" style="font-size:11px;color:var(--muted);text-align:right;position:relative">${l.orders||1}</span></div>`});
+  // Spread
+  const spread=bookAsks.length&&bookBids.length?(bookAsks[0].price-bookBids[0].price).toFixed(2):'—';
+  html+=`<div style="padding:6px 12px;border-top:1px solid rgba(30,41,59,0.5);border-bottom:1px solid rgba(30,41,59,0.5);background:rgba(10,14,23,0.5);display:flex;justify-content:space-between"><span class="mono" style="font-size:9px;color:var(--muted);letter-spacing:.06em">SPREAD</span><span class="mono" style="font-size:11px;color:var(--yellow)">${spread}</span></div>`;
+  // Bids
+  bookBids.forEach(l=>{html+=`<div style="position:relative;display:grid;grid-template-columns:1fr 1fr 1fr;padding:2px 12px"><div style="position:absolute;left:0;top:0;bottom:0;background:rgba(0,229,160,0.08);width:${(l.qty/max)*100}%"></div><span class="mono" style="font-size:11px;color:var(--green);position:relative">${l.price.toFixed(2)}</span><span class="mono" style="font-size:11px;text-align:right;position:relative">${l.qty.toLocaleString()}</span><span class="mono" style="font-size:11px;color:var(--muted);text-align:right;position:relative">${l.orders||1}</span></div>`});
+  if(!bookBids.length&&!bookAsks.length)html='<div style="display:flex;align-items:center;justify-content:center;height:80px;color:var(--muted);font-size:12px" class="mono">No orders on book</div>';
+  c.innerHTML=html;
+}
+
+function renderBlotter(){
+  const c=document.getElementById('blotter');let html='';
+  trades.forEach((t,i)=>{
+    const ts=new Date(t.ts).toLocaleTimeString('en-US',{hour12:false});
+    const not=(t.qty*t.price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const tid=(t.tradeId||'').slice(-8);
+    html+=`<div style="display:grid;grid-template-columns:1fr 1fr 0.6fr 0.8fr 0.8fr 1fr .8fr;padding:2px 12px;border-bottom:1px solid rgba(30,41,59,0.3)" class="${t._live&&i===0?'row-flash':''}"><span class="mono" style="font-size:11px;color:var(--muted)">${ts}</span><span class="mono" style="font-size:11px;font-weight:500">${t.symbol}</span><span class="mono" style="font-size:11px;font-weight:600;color:${t.side==='BUY'?'var(--green)':'var(--red)'}">${t.side}</span><span class="mono" style="font-size:11px;text-align:right">${t.qty.toLocaleString()}</span><span class="mono" style="font-size:11px;text-align:right">${Number(t.price).toFixed(2)}</span><span class="mono" style="font-size:11px;text-align:right;color:var(--muted)">$${not}</span><span class="mono" style="font-size:10px;color:var(--border)">${tid}</span></div>`;
+  });
+  if(!trades.length)html='<div style="display:flex;align-items:center;justify-content:center;height:60px;color:var(--muted);font-size:12px" class="mono">No trades yet — submit matching orders</div>';
+  c.innerHTML=html;
+}
+
+function renderPositions(){
+  const c=document.getElementById('positions');let html='',totalPnl=0;
+  Object.values(positions).forEach(p=>{
+    totalPnl+=p.pnl;
+    html+=`<div style="display:grid;grid-template-columns:1fr 1fr .7fr .8fr .8fr;padding:3px 12px;border-bottom:1px solid rgba(30,41,59,0.3)"><span class="mono" style="font-size:11px;color:var(--blue);overflow:hidden;text-overflow:ellipsis">${p.accountId}</span><span class="mono" style="font-size:11px;font-weight:500">${p.symbol}</span><span class="mono" style="font-size:11px;text-align:right;color:${p.qty>0?'var(--green)':p.qty<0?'var(--red)':'var(--muted)'}">${p.qty>0?'+':''}${p.qty}</span><span class="mono" style="font-size:11px;text-align:right">${p.avgPx?p.avgPx.toFixed(2):'—'}</span><span class="mono" style="font-size:11px;text-align:right;font-weight:500;color:${p.pnl>0?'var(--green)':p.pnl<0?'var(--red)':'var(--muted)'}">${p.pnl>0?'+':''}${p.pnl.toFixed(2)}</span></div>`;
+  });
+  if(!Object.keys(positions).length)html='<div style="display:flex;align-items:center;justify-content:center;height:60px;color:var(--muted);font-size:12px" class="mono">No positions</div>';
+  c.innerHTML=html;
+  const pe=document.getElementById('total-pnl');pe.textContent='PnL: '+(totalPnl>=0?'+':'')+totalPnl.toFixed(2);pe.style.color=totalPnl>=0?'var(--green)':'var(--red)';
+}
+
+function renderOrderFeed(){
+  const c=document.getElementById('order-feed');let html='';
+  orders.forEach(o=>{
+    const ts=o.ts.toLocaleTimeString('en-US',{hour12:false});
+    html+=`<div class="slide-up" style="display:flex;align-items:center;gap:8px;padding:2px 12px;border-bottom:1px solid rgba(30,41,59,0.15)"><span style="font-size:11px;color:${o.color}">${o.icon}</span><span class="mono" style="font-size:10px;color:var(--muted);width:52px;flex:none">${ts}</span><span class="mono" style="font-size:10px;width:80px;flex:none;overflow:hidden;text-overflow:ellipsis">${o.oid.slice(-10)}</span><span class="mono" style="font-size:10px;font-weight:600;color:${o.color}">${o.status}</span><span class="mono" style="font-size:10px;color:var(--muted);margin-left:auto">${o.symbol} ${o.side}</span></div>`;
+  });
+  c.innerHTML=html;
+}
+
+function renderChart(){
+  const canvas=document.getElementById('chart-canvas');
+  const ctx=canvas.getContext('2d');
+  const rect=canvas.parentElement.getBoundingClientRect();
+  canvas.width=rect.width*2;canvas.height=rect.height*2;canvas.style.width=rect.width+'px';canvas.style.height=rect.height+'px';
+  ctx.scale(2,2);const W=rect.width,H=rect.height;
+  ctx.clearRect(0,0,W,H);
+  const data=priceHistory.filter(p=>p.symbol===sym);
+  if(!data.length){ctx.fillStyle='var(--muted)';ctx.font='12px JetBrains Mono';ctx.textAlign='center';ctx.fillText('No trade data for '+sym,W/2,H/2);ctx.font='10px JetBrains Mono';ctx.fillText('Submit matching buy and sell orders to see the chart',W/2,H/2+20);return}
+  const prices=data.map(d=>d.price);const minP=Math.min(...prices)*0.999;const maxP=Math.max(...prices)*1.001;const range=maxP-minP||1;
+  const pad={t:10,b:25,l:50,r:10};const cW=W-pad.l-pad.r;const cH=H-pad.t-pad.b;
+  // Grid
+  ctx.strokeStyle='#1e293b';ctx.lineWidth=0.5;
+  for(let i=0;i<=4;i++){const y=pad.t+cH*(i/4);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();ctx.fillStyle='#64748b';ctx.font='9px JetBrains Mono';ctx.textAlign='right';ctx.fillText('$'+(maxP-range*(i/4)).toFixed(2),pad.l-6,y+3)}
+  // Price line
+  const first=data[0].price;const last=data[data.length-1].price;const up=last>=first;
+  ctx.beginPath();
+  data.forEach((d,i)=>{const x=pad.l+(i/(data.length-1||1))*cW;const y=pad.t+(1-(d.price-minP)/range)*cH;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)});
+  ctx.strokeStyle=up?'#00e5a0':'#ef4444';ctx.lineWidth=1.5;ctx.stroke();
+  // Gradient fill
+  const lastX=pad.l+cW;const lastY=pad.t+(1-(data[data.length-1].price-minP)/range)*cH;
+  ctx.lineTo(lastX,pad.t+cH);ctx.lineTo(pad.l,pad.t+cH);ctx.closePath();
+  const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+cH);grad.addColorStop(0,up?'rgba(0,229,160,0.2)':'rgba(239,68,68,0.2)');grad.addColorStop(1,'transparent');ctx.fillStyle=grad;ctx.fill();
+  // Last price dot
+  ctx.beginPath();ctx.arc(lastX,lastY,3,0,Math.PI*2);ctx.fillStyle=up?'#00e5a0':'#ef4444';ctx.fill();
+  // Update price display
+  document.getElementById('last-price').textContent='$'+last.toFixed(2);
+  const ch=last-first;const pct=first?((ch/first)*100).toFixed(3):'0.000';
+  const pe=document.getElementById('price-change');pe.textContent=(ch>=0?'+':'')+ch.toFixed(2)+' ('+pct+'%)';pe.style.color=ch>=0?'var(--green)':'var(--red)';
+}
+
+// ─── Simulate initial market data ───
+function simulateInitialData(){
+  const base={AAPL:150,GOOGL:175,MSFT:420,AMZN:185,TSLA:250,NVDA:880};
+  const bp=base[sym]||150;
+  // Build order book
+  bookBids=[];bookAsks=[];
+  for(let i=1;i<=8;i++){bookBids.push({price:bp-i*0.50,qty:Math.floor(100+Math.random()*400),orders:Math.floor(1+Math.random()*5)});bookAsks.push({price:bp+i*0.50,qty:Math.floor(100+Math.random()*400),orders:Math.floor(1+Math.random()*5)})}
+  // Simulate some historical trades
+  const now=Date.now();
+  for(let i=0;i<20;i++){
+    const drift=(Math.random()-0.48)*1.5;const px=bp+drift;const s=Math.random()>0.5?'BUY':'SELL';
+    priceHistory.push({ts:now-((20-i)*3000),price:parseFloat(px.toFixed(2)),qty:Math.floor(50+Math.random()*200),side:s,symbol:sym});
+    const tid='TRD-SIM-'+i;const oid='ORD-SIM-'+i;const acct='TRADER-'+(Math.random()>0.5?'ALPHA':'BETA');
+    trades.push({tradeId:tid,orderId:oid,accountId:acct,symbol:sym,side:s,qty:Math.floor(50+Math.random()*200),price:parseFloat(px.toFixed(2)),ts:new Date(now-((20-i)*3000)).toISOString()});
+  }
+  fillCount=20;
+  // Seed positions
+  updatePosition('TRADER-ALPHA',sym,500,bp-0.5,'BUY');updatePosition('TRADER-BETA',sym,300,bp+0.3,'SELL');
+  renderBook();renderBlotter();renderPositions();renderChart();
+  document.getElementById('sys-fills').textContent=fillCount;document.getElementById('fill-count').textContent=fillCount+' fills';
+}
+
+window.addEventListener('resize',()=>{renderChart()});
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: market-data-svc
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/alphatrade}
+    username: ${DB_USER:alphatrade}
+    password: ${DB_PASS:alphatrade123}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+
+alphavantage:
+  api-key: ${ALPHA_VANTAGE_KEY:demo}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}

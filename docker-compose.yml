@@ -1,0 +1,262 @@
+services:
+  # ============================================================
+  # INFRASTRUCTURE
+  # ============================================================
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.1
+    container_name: alphatrade-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+    ports:
+      - "19092:19092"
+      - "18082:18082"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.1
+    container_name: alphatrade-redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command: |
+      -c "
+      rpk topic create orders.raw --brokers redpanda:9092 -p 3 -r 1 &&
+      rpk topic create orders.valid --brokers redpanda:9092 -p 3 -r 1 &&
+      rpk topic create orders.reject --brokers redpanda:9092 -p 3 -r 1 &&
+      rpk topic create orders.updates --brokers redpanda:9092 -p 3 -r 1 &&
+      rpk topic create trades.fills --brokers redpanda:9092 -p 3 -r 1 &&
+      rpk topic create book.snapshots --brokers redpanda:9092 -p 3 -r 1 &&
+      rpk topic create market.ticks --brokers redpanda:9092 -p 3 -r 1 &&
+      echo '=== All Kafka topics created ==='
+      "
+
+  postgres:
+    image: timescale/timescaledb:2.16.1-pg16
+    container_name: alphatrade-postgres
+    environment:
+      POSTGRES_DB: alphatrade
+      POSTGRES_USER: alphatrade
+      POSTGRES_PASSWORD: alphatrade123
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alphatrade"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: alphatrade-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ============================================================
+  # APPLICATION SERVICES
+  # ============================================================
+  order-gateway:
+    build:
+      context: .
+      dockerfile: modules/order-gateway-svc/Dockerfile
+    container_name: alphatrade-order-gateway
+    ports:
+      - "8081:8081"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+
+  risk-svc:
+    build:
+      context: .
+      dockerfile: modules/risk-svc/Dockerfile
+    container_name: alphatrade-risk-svc
+    ports:
+      - "8082:8082"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+
+  match-engine:
+    build:
+      context: .
+      dockerfile: modules/match-engine-svc/Dockerfile
+    container_name: alphatrade-match-engine
+    ports:
+      - "8083:8083"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+
+  portfolio-svc:
+    build:
+      context: .
+      dockerfile: modules/portfolio-svc/Dockerfile
+    container_name: alphatrade-portfolio-svc
+    ports:
+      - "8084:8084"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      DB_URL: jdbc:postgresql://postgres:5432/alphatrade
+      DB_USER: alphatrade
+      DB_PASS: alphatrade123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: modules/api-gw-graphql/Dockerfile
+    container_name: alphatrade-api-gateway
+    ports:
+      - "8085:8085"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      DB_URL: jdbc:postgresql://postgres:5432/alphatrade
+      DB_USER: alphatrade
+      DB_PASS: alphatrade123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
+  market-data-svc:
+    build:
+      context: .
+      dockerfile: modules/market-data-svc/Dockerfile
+    container_name: alphatrade-market-data
+    ports:
+      - "8087:8087"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/alphatrade
+      DB_USER: alphatrade
+      DB_PASS: alphatrade123
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      ALPHA_VANTAGE_KEY: ${ALPHA_VANTAGE_KEY:-demo}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
+  model-svc:
+    build:
+      context: .
+      dockerfile: python-research/Dockerfile
+    container_name: alphatrade-model-svc
+    ports:
+      - "8090:8090"
+
+  analysis-svc:
+    build:
+      context: .
+      dockerfile: modules/analysis-svc/Dockerfile
+    container_name: alphatrade-analysis
+    ports:
+      - "8088:8088"
+    environment:
+      MARKET_DATA_URL: http://market-data-svc:8087
+      MODEL_INFERENCE_URL: http://model-svc:8090
+      DB_URL: jdbc:postgresql://postgres:5432/alphatrade
+      DB_USER: alphatrade
+      DB_PASS: alphatrade123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      market-data-svc:
+        condition: service_started
+      model-svc:
+        condition: service_started
+
+  backtest-svc:
+    build:
+      context: .
+      dockerfile: modules/backtest-svc/Dockerfile
+    container_name: alphatrade-backtest
+    ports:
+      - "8089:8089"
+    environment:
+      MARKET_DATA_URL: http://market-data-svc:8087
+      ANALYSIS_URL: http://analysis-svc:8088
+    depends_on:
+      market-data-svc:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: alphatrade-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - order-gateway
+      - risk-svc
+      - match-engine
+      - portfolio-svc
+      - api-gateway
+      - market-data-svc
+      - model-svc
+      - analysis-svc
+      - backtest-svc
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: alphatrade-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # ============================================================
+  # UI
+  # ============================================================
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: alphatrade-ui
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+      - order-gateway
+
+volumes:
+  pgdata:
+  grafana-data:

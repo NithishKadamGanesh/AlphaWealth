@@ -1,0 +1,44 @@
+server:
+  port: 8088
+
+spring:
+  application:
+    name: analysis-svc
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/alphatrade}
+    username: ${DB_USER:alphatrade}
+    password: ${DB_PASS:alphatrade123}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+marketdata:
+  url: ${MARKET_DATA_URL:http://localhost:8087}
+
+model:
+  inference:
+    url: ${MODEL_INFERENCE_URL:http://localhost:8090}
+
+analysis:
+  scheduler:
+    initial-delay-ms: ${ANALYSIS_SCHEDULER_INITIAL_DELAY_MS:30000}
+    fixed-delay-ms: ${ANALYSIS_SCHEDULER_FIXED_DELAY_MS:120000}
+    symbols: ${ANALYSIS_SCHEDULER_SYMBOLS:AAPL,MSFT,NVDA,AMZN,TSLA,META}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
