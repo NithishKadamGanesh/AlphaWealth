@@ -1,6 +1,12 @@
 # AlphaTrade Engine
 
-A **quantitative trading platform** built as a microservices architecture with real-time order matching, risk validation, portfolio tracking, research services, observability, and a live trading terminal UI.
+A multi-service **quant trading and market-analysis platform** built around an event-driven Java backend, a Python research/model layer, and a modern React trading workstation.
+
+It combines:
+- real-time simulated order routing, risk validation, matching, and portfolio accounting
+- Alpha Vantage-powered market-data ingestion with technical analysis and backtesting services
+- a Python inference service plus room for future native C++ acceleration
+- observability via Prometheus and Grafana
 
 The repo now also includes:
 - a dedicated `python-research/` workspace for NumPy/Pandas/SciPy/Numba-based research
