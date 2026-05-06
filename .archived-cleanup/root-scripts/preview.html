@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AlphaWealth Command Center · Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #0a0a0b; --bg: #fafafa; --surface: #fff; --border: #e4e4e7; --muted: #71717a;
+  --lime: #c4f542; --limeBg: #c4f54220;
+  --cyan: #06b6d4; --cyanBg: #06b6d420;
+  --violet: #8b5cf6; --violetBg: #8b5cf620;
+  --amber: #f59e0b; --amberBg: #f59e0b20;
+  --pink: #ec4899; --pinkBg: #ec489920;
+  --red: #ef4444; --redBg: #ef444420;
+  --blue: #3b82f6;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); font-family: 'Inter', sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+.mono { font-family: 'JetBrains Mono', monospace; }
+.display { font-family: 'Space Grotesk', sans-serif; }
+
+/* Sidebar */
+aside { width: 240px; background: var(--ink); color: #fff; position: fixed; top: 0; left: 0; height: 100vh;
+  display: flex; flex-direction: column; z-index: 50; }
+.logo { padding: 26px 22px 22px; border-bottom: 1px solid #1f1f24; display: flex; align-items: center; gap: 10px; }
+.logo-box { width: 32px; height: 32px; background: var(--lime); border-radius: 8px; display: flex;
+  align-items: center; justify-content: center; font-weight: 800; color: var(--ink); }
+.logo-name { font-family: 'Space Grotesk', sans-serif; font-size: 17px; font-weight: 800; letter-spacing: -0.02em; }
+.logo-name span { color: var(--lime); }
+.logo-ver { font-size: 9px; color: #71717a; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.15em; }
+nav { flex: 1; padding: 10px 12px; overflow-y: auto; }
+.section-label { padding: 12px 12px 6px; font-size: 9px; color: #52525b; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; font-family: 'JetBrains Mono', monospace; }
+.nav-item { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 9px;
+  color: #a1a1aa; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+.nav-item:hover { background: #1a1a20; color: #fff; }
+.nav-item.active { background: var(--lime); color: var(--ink); font-weight: 700; }
+.nav-icon { width: 16px; height: 16px; }
+.live-dot { width: 6px; height: 6px; background: var(--lime); border-radius: 50%; margin-left: auto;
+  animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.system-card { margin: 12px; padding: 10px; background: #1a1a20; border: 1px solid #27272a; border-radius: 10px; }
+.system-row { display: flex; justify-content: space-between; font-size: 10px; color: #a1a1aa; line-height: 1.7; }
+.account { padding: 14px; border-top: 1px solid #1f1f24; display: flex; align-items: center; gap: 10px; }
+.avatar { width: 32px; height: 32px; border-radius: 9px; background: linear-gradient(135deg, var(--lime), var(--cyan));
+  display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--ink); font-size: 12px;
+  font-family: 'Space Grotesk', sans-serif; }
+
+/* Main */
+main { margin-left: 240px; min-height: 100vh; padding: 32px 36px; }
+.ticker { background: var(--ink); color: #fff; padding: 10px 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; overflow: hidden; white-space: nowrap; margin: -32px -36px 24px; }
+.ticker-track { display: inline-block; animation: scroll 50s linear infinite; }
+@keyframes scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+.ticker-item { display: inline-block; margin-right: 32px; }
+.ticker-up { color: var(--lime); }
+.ticker-dn { color: var(--red); }
+
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; }
+.page-title { font-family: 'Space Grotesk', sans-serif; font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
+.page-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 100px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; font-family: 'JetBrains Mono', monospace;
+  margin-left: 6px; }
+
+.grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+.col-3 { grid-column: span 3; } .col-4 { grid-column: span 4; }
+.col-5 { grid-column: span 5; } .col-6 { grid-column: span 6; }
+.col-7 { grid-column: span 7; } .col-8 { grid-column: span 8; }
+.col-9 { grid-column: span 9; } .col-12 { grid-column: span 12; }
+.label { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+.numeric { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+
+/* KPI cards */
+.kpi-stack { display: flex; flex-direction: column; }
+.kpi-value { font-size: 30px; margin-top: 6px; }
+.kpi-trend { display: inline-block; padding: 3px 8px; border-radius: 100px; font-size: 11px;
+  font-weight: 700; font-family: 'JetBrains Mono', monospace; margin-top: 6px; }
+
+/* Sparkline */
+.spark { width: 100%; height: 30px; margin-top: 12px; }
+
+/* Chart */
+.chart-area { height: 280px; margin-top: 14px; position: relative; }
+
+/* Holdings table */
+table { width: 100%; border-collapse: collapse; }
+th { padding: 12px 24px; text-align: left; font-size: 10px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.08em; font-family: 'JetBrains Mono', monospace; background: var(--bg); }
+td { padding: 16px 24px; font-size: 13px; border-bottom: 1px solid var(--border); }
+.tbl-mono { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.up { color: var(--lime); }
+.dn { color: var(--red); }
+.symbol-pill { width: 32px; height: 32px; border-radius: 8px; background: var(--ink); color: var(--lime);
+  display: inline-flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; font-weight: 800; }
+
+/* Section heading */
+h3 { font-size: 16px; font-weight: 700; font-family: 'Space Grotesk', sans-serif; margin-bottom: 8px; }
+
+/* Banner */
+.banner { background: linear-gradient(135deg, var(--ink) 0%, #1a1a20 100%); color: #fff;
+  padding: 24px; border-radius: 14px; margin-bottom: 20px; position: relative; overflow: hidden; }
+.banner::before { content: ''; position: absolute; top: -50%; right: -10%; width: 400px; height: 400px;
+  background: radial-gradient(circle, var(--lime)40, transparent 70%); opacity: 0.15; }
+
+.preview-banner { background: var(--amberBg); border: 1px solid var(--amber); padding: 14px 20px;
+  border-radius: 10px; margin-bottom: 20px; font-size: 13px; color: var(--ink); }
+.preview-banner strong { color: var(--amber); }
+
+/* Pattern card */
+.pattern-card { padding: 14px; background: var(--bg); border-radius: 10px; border-left: 4px solid var(--lime);
+  border: 1px solid var(--border); }
+.pattern-card.bear { border-left-color: var(--red); }
+.pattern-card.neutral { border-left-color: var(--amber); }
+
+/* Heatmap cell */
+.heat { width: 22px; height: 22px; border-radius: 3px; display: inline-block; margin: 1px; }
+
+/* Signal box */
+.signal-buy { display: inline-block; padding: 10px 18px; border-radius: 10px; background: var(--lime); color: var(--ink); }
+.signal-buy .action { font-family: 'Space Grotesk', sans-serif; font-size: 22px; font-weight: 800; }
+.signal-buy .conf { font-size: 10px; font-family: 'JetBrains Mono', monospace; opacity: 0.7; }
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="logo">
+    <div class="logo-box">⚡</div>
+    <div>
+      <div class="logo-name">ALPHA<span>WEALTH</span></div>
+      <div class="logo-ver">v2.0 · COMMAND</div>
+    </div>
+  </div>
+  <nav>
+    <div class="section-label">Workspace</div>
+    <div class="nav-item active">▦ Dashboard</div>
+    <div class="nav-item">📈 Net Worth</div>
+    <div class="nav-item">💼 Portfolio</div>
+    <div class="nav-item">📊 Markets <span class="live-dot"></span></div>
+    <div class="nav-item">🏦 Banking</div>
+    <div class="section-label">Research</div>
+    <div class="nav-item">🧩 Patterns</div>
+    <div class="nav-item">📅 Seasonality</div>
+    <div class="nav-item">⚖️ Options</div>
+    <div class="nav-item">🧪 Backtest</div>
+    <div class="section-label">Tools</div>
+    <div class="nav-item">✨ AI Advisor</div>
+    <div class="nav-item">🎯 FIRE</div>
+    <div class="nav-item">⚙ Settings</div>
+  </nav>
+  <div class="system-card">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <div style="width: 6px; height: 6px; background: var(--lime); border-radius: 50%;"></div>
+      <span class="label" style="color: #52525b;">System</span>
+    </div>
+    <div class="system-row"><span>yfinance</span><span style="color: var(--lime);">● live</span></div>
+    <div class="system-row"><span>analysis-svc</span><span style="color: var(--lime);">● ready</span></div>
+    <div class="system-row"><span>C++ engine</span><span style="color: var(--lime);">● OK</span></div>
+  </div>
+  <div class="account">
+    <div class="avatar">NK</div>
+    <div style="flex: 1;">
+      <div style="font-size: 12px; font-weight: 600;">Nithish K.</div>
+      <div style="font-size: 9px; color: #71717a; font-family: 'JetBrains Mono', monospace;">nithishkadam@</div>
+    </div>
+  </div>
+</aside>
+
+<main>
+  <div class="ticker">
+    <div class="ticker-track">
+      <span class="ticker-item">AAPL <span class="ticker-up">$232.45 +1.24%</span></span>
+      <span class="ticker-item">NVDA <span class="ticker-up">$185.32 +2.75%</span></span>
+      <span class="ticker-item">MSFT <span class="ticker-up">$432.18 +0.42%</span></span>
+      <span class="ticker-item">GOOGL <span class="ticker-up">$178.92 +0.85%</span></span>
+      <span class="ticker-item">META <span class="ticker-up">$596.41 +1.42%</span></span>
+      <span class="ticker-item">AMZN <span class="ticker-up">$215.83 +1.76%</span></span>
+      <span class="ticker-item">TSLA <span class="ticker-dn">$248.12 -3.25%</span></span>
+      <span class="ticker-item">VOO <span class="ticker-up">$542.18 +0.42%</span></span>
+      <span class="ticker-item">^VIX <span class="ticker-dn">14.23 -2.15%</span></span>
+      <span class="ticker-item">BTC <span class="ticker-up">$98,432 +3.21%</span></span>
+      <span class="ticker-item">AAPL <span class="ticker-up">$232.45 +1.24%</span></span>
+      <span class="ticker-item">NVDA <span class="ticker-up">$185.32 +2.75%</span></span>
+      <span class="ticker-item">MSFT <span class="ticker-up">$432.18 +0.42%</span></span>
+      <span class="ticker-item">GOOGL <span class="ticker-up">$178.92 +0.85%</span></span>
+      <span class="ticker-item">META <span class="ticker-up">$596.41 +1.42%</span></span>
+      <span class="ticker-item">AMZN <span class="ticker-up">$215.83 +1.76%</span></span>
+    </div>
+  </div>
+
+  <div class="preview-banner">
+    <strong>📋 STATIC PREVIEW</strong> — This is a self-contained HTML mockup showing the visual design. To see the live application with real data,
+    run <code style="background: rgba(0,0,0,0.05); padding: 2px 6px; border-radius: 4px;">docker compose up --build -d</code>
+    in the project root, then open <code style="background: rgba(0,0,0,0.05); padding: 2px 6px; border-radius: 4px;">http://localhost:3000</code>
+  </div>
+
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Dashboard</h1>
+      <div class="page-sub">Welcome back, Nithish · Wednesday, May 6, 2026</div>
+    </div>
+    <div>
+      <span class="tag" style="background: var(--limeBg); color: var(--lime);">● LIVE</span>
+      <span class="tag" style="background: var(--ink); color: var(--lime);">⚡ C++ ENGINE</span>
+      <span class="tag" style="background: var(--violetBg); color: var(--violet);">🔬 ANALYSIS-SVC</span>
+    </div>
+  </div>
+
+  <div class="banner">
+    <div style="position: relative; z-index: 1;">
+      <div class="label" style="color: #71717a;">Total Net Worth</div>
+      <div class="display" style="font-size: 48px; font-weight: 800; margin-top: 8px; letter-spacing: -0.02em;">$287,430</div>
+      <div style="margin-top: 8px; display: flex; gap: 16px; align-items: center;">
+        <span style="background: var(--lime); color: var(--ink); padding: 4px 12px; border-radius: 100px; font-weight: 700; font-size: 12px;">↑ +$24,180 this month</span>
+        <span style="font-size: 12px; color: #a1a1aa;">+9.18% YoY · Tracking 2.3y to FIRE</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- KPI cards -->
+    <div class="col-3">
+      <div class="card kpi-stack">
+        <div class="label">Portfolio Value</div>
+        <div class="numeric kpi-value">$46,897</div>
+        <span class="kpi-trend" style="background: var(--limeBg); color: var(--lime);">+18.4%</span>
+        <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none">
+          <polyline fill="none" stroke="var(--lime)" stroke-width="2" points="0,20 10,18 20,15 30,16 40,12 50,10 60,8 70,5 80,7 90,3 100,2"/>
+        </svg>
+      </div>
+    </div>
+    <div class="col-3">
+      <div class="card kpi-stack" style="background: var(--ink); color: #fff;">
+        <div class="label" style="color: #71717a;">Cash & Banking</div>
+        <div class="numeric kpi-value" style="color: var(--lime);">$32,450</div>
+        <span class="kpi-trend" style="background: transparent; border: 1px solid var(--lime); color: var(--lime);">3 accts</span>
+        <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none">
+          <polyline fill="none" stroke="var(--lime)" stroke-width="2" points="0,15 10,17 20,13 30,15 40,12 50,11 60,14 70,12 80,9 90,11 100,8"/>
+        </svg>
+      </div>
+    </div>
+    <div class="col-3">
+      <div class="card kpi-stack" style="background: var(--lime);">
+        <div class="label">Sharpe Ratio</div>
+        <div class="numeric kpi-value">1.84</div>
+        <span class="kpi-trend" style="background: var(--ink); color: var(--lime);">vs SPY 1.12</span>
+        <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none">
+          <polyline fill="none" stroke="var(--ink)" stroke-width="2" points="0,18 10,16 20,17 30,14 40,12 50,13 60,10 70,8 80,11 90,7 100,5"/>
+        </svg>
+      </div>
+    </div>
+    <div class="col-3">
+      <div class="card kpi-stack" style="background: var(--violetBg);">
+        <div class="label">Save Rate</div>
+        <div class="numeric kpi-value">24%</div>
+        <span class="kpi-trend" style="background: transparent; border: 1px solid var(--violet); color: var(--violet);">+3% MoM</span>
+        <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none">
+          <polyline fill="none" stroke="var(--violet)" stroke-width="2" points="0,22 10,20 20,18 30,19 40,15 50,13 60,11 70,12 80,8 90,9 100,6"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Net worth trend chart -->
+    <div class="col-8">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 14px;">
+          <div>
+            <div class="label">Net Worth · 12 Months</div>
+            <div style="font-size: 18px; font-weight: 700; margin-top: 4px;" class="display">+$67,420 (30.6%)</div>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button style="padding: 5px 12px; border-radius: 7px; border: 1px solid var(--border); background: white; font-size: 11px; font-family: 'JetBrains Mono', monospace; cursor: pointer;">3M</button>
+            <button style="padding: 5px 12px; border-radius: 7px; border: none; background: var(--lime); font-weight: 700; font-size: 11px; font-family: 'JetBrains Mono', monospace; cursor: pointer;">1Y</button>
+            <button style="padding: 5px 12px; border-radius: 7px; border: 1px solid var(--border); background: white; font-size: 11px; font-family: 'JetBrains Mono', monospace; cursor: pointer;">5Y</button>
+          </div>
+        </div>
+        <div class="chart-area">
+          <svg width="100%" height="280" preserveAspectRatio="none" viewBox="0 0 800 280">
+            <defs>
+              <linearGradient id="gd" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stop-color="#c4f542" stop-opacity="0.4"/>
+                <stop offset="100%" stop-color="#c4f542" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <!-- gridlines -->
+            <line x1="0" y1="70" x2="800" y2="70" stroke="#e4e4e7" stroke-dasharray="3,3"/>
+            <line x1="0" y1="140" x2="800" y2="140" stroke="#e4e4e7" stroke-dasharray="3,3"/>
+            <line x1="0" y1="210" x2="800" y2="210" stroke="#e4e4e7" stroke-dasharray="3,3"/>
+            <!-- area -->
+            <path d="M 0 240 L 70 230 L 140 220 L 210 200 L 280 180 L 350 175 L 420 160 L 490 145 L 560 130 L 630 100 L 700 85 L 800 50 L 800 280 L 0 280 Z" fill="url(#gd)"/>
+            <path d="M 0 240 L 70 230 L 140 220 L 210 200 L 280 180 L 350 175 L 420 160 L 490 145 L 560 130 L 630 100 L 700 85 L 800 50" fill="none" stroke="#c4f542" stroke-width="3"/>
+            <!-- point markers -->
+            <circle cx="800" cy="50" r="5" fill="#0a0a0b"/>
+            <circle cx="800" cy="50" r="2" fill="#c4f542"/>
+            <!-- y-axis labels -->
+            <text x="5" y="65" fill="#71717a" font-size="10" font-family="JetBrains Mono">$300k</text>
+            <text x="5" y="135" fill="#71717a" font-size="10" font-family="JetBrains Mono">$250k</text>
+            <text x="5" y="205" fill="#71717a" font-size="10" font-family="JetBrains Mono">$200k</text>
+            <!-- x-axis labels -->
+            <text x="0" y="275" fill="#71717a" font-size="10" font-family="JetBrains Mono">May '25</text>
+            <text x="200" y="275" fill="#71717a" font-size="10" font-family="JetBrains Mono">Aug '25</text>
+            <text x="400" y="275" fill="#71717a" font-size="10" font-family="JetBrains Mono">Nov '25</text>
+            <text x="600" y="275" fill="#71717a" font-size="10" font-family="JetBrains Mono">Feb '26</text>
+            <text x="745" y="275" fill="#71717a" font-size="10" font-family="JetBrains Mono">May '26</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live signal -->
+    <div class="col-4">
+      <div class="card" style="background: var(--ink); color: #fff;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <div class="label" style="color: #71717a;">⚡ Signal · AAPL</div>
+          <div style="width: 6px; height: 6px; background: var(--lime); border-radius: 50%;"></div>
+        </div>
+        <div class="signal-buy">
+          <div class="action">BUY</div>
+          <div class="conf">confidence 80%</div>
+        </div>
+        <div style="font-size: 11px; color: #a1a1aa; margin-top: 12px; margin-bottom: 12px;">
+          Regime: <span style="color: var(--lime); font-family: 'JetBrains Mono', monospace;">TRENDING</span>
+        </div>
+        <div style="padding: 10px; background: #1a1a20; border-radius: 8px; margin-bottom: 12px;">
+          <div class="label" style="color: #71717a;">Multi-Timeframe</div>
+          <div style="font-family: 'Space Grotesk', sans-serif; font-size: 14px; font-weight: 700; color: var(--lime); margin-top: 4px;">
+            STRONG BUY
+          </div>
+          <div style="font-size: 10px; color: #a1a1aa; margin-top: 4px;">Score: 90% · Daily + Weekly aligned</div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div style="padding: 8px; background: #1a1a20; border-radius: 7px;">
+            <div class="label" style="color: #71717a; font-size: 9px;">RSI 14</div>
+            <div class="numeric" style="font-size: 12px; margin-top: 3px;">58.4</div>
+          </div>
+          <div style="padding: 8px; background: #1a1a20; border-radius: 7px;">
+            <div class="label" style="color: #71717a; font-size: 9px;">MACD</div>
+            <div class="numeric" style="font-size: 12px; margin-top: 3px; color: var(--lime);">+2.1</div>
+          </div>
+          <div style="padding: 8px; background: #1a1a20; border-radius: 7px;">
+            <div class="label" style="color: #71717a; font-size: 9px;">Stochastic</div>
+            <div class="numeric" style="font-size: 12px; margin-top: 3px;">72.3</div>
+          </div>
+          <div style="padding: 8px; background: #1a1a20; border-radius: 7px;">
+            <div class="label" style="color: #71717a; font-size: 9px;">ADX</div>
+            <div class="numeric" style="font-size: 12px; margin-top: 3px;">28.5</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- IBKR Holdings -->
+    <div class="col-12">
+      <div class="card" style="padding: 0;">
+        <div style="padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;">
+          <div>
+            <div class="label">⚡ IBKR Holdings · Live</div>
+            <div class="display" style="font-size: 16px; font-weight: 700; margin-top: 4px;">Portfolio Composition</div>
+          </div>
+          <span class="tag" style="background: var(--bg); color: var(--muted);">5 positions</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Shares</th><th>Price</th><th>Market Value</th><th>P&L</th><th>Day</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="symbol-pill">NV</span> <strong style="margin-left: 10px;">NVDA</strong> <span style="color: var(--muted); font-size: 11px;">NVIDIA Corp</span></td>
+              <td class="tbl-mono">85</td>
+              <td class="tbl-mono">$185.32</td>
+              <td class="tbl-mono">$15,752</td>
+              <td><div class="tbl-mono up">+$3,847</div><div style="font-size: 10px;" class="tbl-mono up">+32.4%</div></td>
+              <td><div class="tbl-mono up">↑ +2.75%</div></td>
+            </tr>
+            <tr>
+              <td><span class="symbol-pill">VO</span> <strong style="margin-left: 10px;">VOO</strong> <span style="color: var(--muted); font-size: 11px;">Vanguard S&P 500</span></td>
+              <td class="tbl-mono">32</td>
+              <td class="tbl-mono">$542.18</td>
+              <td class="tbl-mono">$17,350</td>
+              <td><div class="tbl-mono up">+$2,140</div><div style="font-size: 10px;" class="tbl-mono up">+14.1%</div></td>
+              <td><div class="tbl-mono up">↑ +0.42%</div></td>
+            </tr>
+            <tr>
+              <td><span class="symbol-pill">AA</span> <strong style="margin-left: 10px;">AAPL</strong> <span style="color: var(--muted); font-size: 11px;">Apple Inc</span></td>
+              <td class="tbl-mono">42</td>
+              <td class="tbl-mono">$232.45</td>
+              <td class="tbl-mono">$9,763</td>
+              <td><div class="tbl-mono up">+$1,420</div><div style="font-size: 10px;" class="tbl-mono up">+17.0%</div></td>
+              <td><div class="tbl-mono up">↑ +1.24%</div></td>
+            </tr>
+            <tr>
+              <td><span class="symbol-pill">MS</span> <strong style="margin-left: 10px;">MSFT</strong> <span style="color: var(--muted); font-size: 11px;">Microsoft Corp</span></td>
+              <td class="tbl-mono">8</td>
+              <td class="tbl-mono">$432.18</td>
+              <td class="tbl-mono">$3,457</td>
+              <td><div class="tbl-mono up">+$285</div><div style="font-size: 10px;" class="tbl-mono up">+9.0%</div></td>
+              <td><div class="tbl-mono up">↑ +0.42%</div></td>
+            </tr>
+            <tr>
+              <td><span class="symbol-pill">AM</span> <strong style="margin-left: 10px;">AMZN</strong> <span style="color: var(--muted); font-size: 11px;">Amazon.com</span></td>
+              <td class="tbl-mono">2</td>
+              <td class="tbl-mono">$215.83</td>
+              <td class="tbl-mono">$432</td>
+              <td><div class="tbl-mono up">+$56</div><div style="font-size: 10px;" class="tbl-mono up">+14.9%</div></td>
+              <td><div class="tbl-mono up">↑ +1.76%</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Patterns -->
+    <div class="col-6">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+          <div class="label">🧩 Recent Patterns · NVDA</div>
+          <span class="tag" style="background: var(--violetBg); color: var(--violet);">3 found</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div class="pattern-card">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <strong style="font-size: 12px;">Double Bottom</strong>
+              <span class="tag" style="background: var(--limeBg); color: var(--lime); font-size: 9px;">BULLISH</span>
+            </div>
+            <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">Support at $172.50 tested twice</div>
+            <div style="font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace;">conf 78% · bars 142-178</div>
+          </div>
+          <div class="pattern-card">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <strong style="font-size: 12px;">Bullish Engulfing</strong>
+              <span class="tag" style="background: var(--limeBg); color: var(--lime); font-size: 9px;">BULLISH</span>
+            </div>
+            <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">Bullish reversal candle</div>
+            <div style="font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace;">conf 70% · bars 195-196</div>
+          </div>
+          <div class="pattern-card neutral">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <strong style="font-size: 12px;">Ascending Triangle</strong>
+              <span class="tag" style="background: var(--limeBg); color: var(--lime); font-size: 9px;">BULLISH</span>
+            </div>
+            <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">Flat resistance, rising lows</div>
+            <div style="font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace;">conf 65% · bars 210-238</div>
+          </div>
+          <div class="pattern-card bear">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <strong style="font-size: 12px;">Doji</strong>
+              <span class="tag" style="background: var(--amberBg); color: var(--amber); font-size: 9px;">NEUTRAL</span>
+            </div>
+            <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">Indecision candle</div>
+            <div style="font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace;">conf 50% · bars 245</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Seasonality preview -->
+    <div class="col-6">
+      <div class="card">
+        <div class="label">📅 Seasonality · AAPL · Best Buy Months</div>
+        <div style="margin-top: 12px;">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--ink); border-radius: 8px; color: white; margin-bottom: 8px;">
+            <span class="display" style="font-size: 18px; font-weight: 800; color: var(--lime);">#1</span>
+            <span style="font-weight: 600; flex: 1;">November</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--lime);">+4.82%</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #a1a1aa;">76% wr</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--ink); border-radius: 8px; color: white; margin-bottom: 8px;">
+            <span class="display" style="font-size: 18px; font-weight: 800; color: var(--lime);">#2</span>
+            <span style="font-weight: 600; flex: 1;">July</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--lime);">+3.41%</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #a1a1aa;">68% wr</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--ink); border-radius: 8px; color: white; margin-bottom: 12px;">
+            <span class="display" style="font-size: 18px; font-weight: 800; color: var(--lime);">#3</span>
+            <span style="font-weight: 600; flex: 1;">April</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--lime);">+2.86%</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #a1a1aa;">64% wr</span>
+          </div>
+        </div>
+        <div style="font-size: 10px; color: var(--muted); margin-top: 10px;">From 5-year historical data via analysis-svc</div>
+      </div>
+    </div>
+
+    <!-- Quick analytics tiles -->
+    <div class="col-3">
+      <div class="card" style="background: var(--cyanBg); border-color: var(--cyan);">
+        <div class="label">⚖️ Options</div>
+        <div style="margin-top: 8px;">
+          <div style="font-size: 11px; color: var(--muted);">AAPL $235 CALL · 30d</div>
+          <div class="display" style="font-size: 24px; font-weight: 800; margin-top: 4px;">$5.42</div>
+          <div style="font-size: 10px; font-family: 'JetBrains Mono', monospace; color: var(--cyan); margin-top: 4px;">Δ 0.52 · Γ 0.034 · IV 28%</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-3">
+      <div class="card" style="background: var(--violetBg); border-color: var(--violet);">
+        <div class="label">🧪 Backtest · SMA-X NVDA</div>
+        <div style="margin-top: 8px;">
+          <div class="display" style="font-size: 24px; font-weight: 800;">+47.2%</div>
+          <div style="font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--violet); margin-top: 4px;">5y · Sharpe 1.62 · DD -12.3%</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-3">
+      <div class="card" style="background: var(--amberBg); border-color: var(--amber);">
+        <div class="label">✨ AI Advisor</div>
+        <div style="font-size: 12px; margin-top: 8px; color: var(--ink); line-height: 1.5;">
+          "Your tech allocation (60%) is concentrated. Consider trimming NVDA gains into VOO to reduce beta..."
+        </div>
+        <div style="font-size: 10px; font-family: 'JetBrains Mono', monospace; color: var(--amber); margin-top: 8px;">Claude Sonnet 4 · ctx 2.4k</div>
+      </div>
+    </div>
+    <div class="col-3">
+      <div class="card" style="background: var(--pinkBg); border-color: var(--pink);">
+        <div class="label">🎯 FIRE Progress</div>
+        <div style="margin-top: 8px;">
+          <div class="display" style="font-size: 24px; font-weight: 800;">19.2%</div>
+          <div style="height: 8px; background: white; border-radius: 100px; margin-top: 8px; overflow: hidden;">
+            <div style="width: 19.2%; height: 100%; background: var(--pink); border-radius: 100px;"></div>
+          </div>
+          <div style="font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--pink); margin-top: 6px;">Target: $1.5M by 38</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top: 32px; padding: 24px; background: white; border: 1px solid var(--border); border-radius: 14px;">
+    <h3>📂 What's in your project folder</h3>
+    <div style="margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--muted); line-height: 1.7;">
+      <strong style="color: var(--ink);">C:\Users\nithi\OneDrive\Desktop\alphatrade-engine\</strong><br>
+      ├── docker-compose.yml &nbsp;&nbsp; <span style="color: var(--lime);">// 14 services orchestrated</span><br>
+      ├── ui/ &nbsp;&nbsp; <span style="color: var(--lime);">// React frontend, 12 pages</span><br>
+      ├── modules/<br>
+      │ &nbsp;├── live-data-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8096 yfinance (Python)</span><br>
+      │ &nbsp;├── analysis-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8088 patterns, S/R, options, etc.</span><br>
+      │ &nbsp;├── backtest-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8089 strategy backtesting</span><br>
+      │ &nbsp;├── ai-advisor-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8094 Claude Sonnet 4 + RAG</span><br>
+      │ &nbsp;├── ibkr-sync-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8091 live broker sync</span><br>
+      │ &nbsp;├── plaid-banking-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8092 Chase via Plaid</span><br>
+      │ &nbsp;├── net-worth-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8093 aggregator</span><br>
+      │ &nbsp;├── alerts-svc/ &nbsp;&nbsp; <span style="color: var(--cyan);">// :8095 email alerts</span><br>
+      │ &nbsp;└── (legacy trading services, off by default)<br>
+      ├── python-research/ &nbsp;&nbsp; <span style="color: var(--violet);">// model_service.py :8090</span><br>
+      └── cpp-native/ &nbsp;&nbsp; <span style="color: var(--violet);">// C++ signal engine :9000</span><br>
+    </div>
+  </div>
+
+</main>
+
+</body>
+</html>

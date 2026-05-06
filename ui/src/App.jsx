@@ -1,148 +1,109 @@
-import React, { Suspense, lazy, useState, useEffect, useCallback, useMemo } from 'react';
-import { useWebSocket } from './hooks/useWebSocket';
-import { useMarketData } from './hooks/useMarketData';
-import { queryGraphQL, QUERIES } from './lib/api';
-import Header from './components/Header';
+import { useState, useEffect, createContext, useContext, useCallback } from "react";
+import { Sidebar } from "./components/Sidebar";
+import { TickerTape } from "./components/TickerTape";
+import { CommandPalette } from "./components/CommandPalette";
+import { ToastProvider, useToast } from "./components/ui/Toast";
+import { Dashboard } from "./pages/Dashboard";
+import { NetWorth } from "./pages/NetWorth";
+import { Portfolio } from "./pages/Portfolio";
+import { Markets } from "./pages/Markets";
+import { Banking } from "./pages/Banking";
+import { AIAdvisor } from "./pages/AIAdvisor";
+import { FIRE } from "./pages/FIRE";
+import { Settings } from "./pages/Settings";
+import { Patterns } from "./pages/Patterns";
+import { Seasonality } from "./pages/Seasonality";
+import { Options } from "./pages/Options";
+import { Backtest } from "./pages/Backtest";
+import { useLiveQuotes } from "./hooks/useLiveQuotes";
 
-const TradingPage = lazy(() => import('./pages/TradingPage'));
-const AnalysisPage = lazy(() => import('./pages/AnalysisPage'));
-const BacktestingPage = lazy(() => import('./pages/BacktestingPage'));
-const PlatformPage = lazy(() => import('./pages/PlatformPage'));
+export const NavContext = createContext({ page: "dashboard", setPage: () => {} });
 
-export default function App() {
-  const ws = useWebSocket();
-  const { quotes, dataSource } = useMarketData();
-  const [positions, setPositions] = useState([]);
-  const [dbTrades, setDbTrades] = useState([]);
-  const [activeSymbol, setActiveSymbol] = useState('AAPL');
-  const [activeAccount, setActiveAccount] = useState('');
-  const [notification, setNotification] = useState(null);
-  const [activePage, setActivePage] = useState('trading');
-  const [densityMode, setDensityMode] = useState('compact');
-
-  const fetchPositions = useCallback(async () => {
-    try {
-      const data = await queryGraphQL(QUERIES.positions, { accountId: activeAccount || null });
-      setPositions(data.positions || []);
-    } catch {}
-  }, [activeAccount]);
-
-  const fetchTrades = useCallback(async () => {
-    try {
-      const data = await queryGraphQL(QUERIES.trades, { accountId: activeAccount || null });
-      setDbTrades(data.trades || []);
-    } catch {}
-  }, [activeAccount]);
+function AppShell() {
+  const [page, setPage] = useState("dashboard");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { quotes, dataMode, isLive, lastError, lastUpdate } = useLiveQuotes();
 
   useEffect(() => {
-    fetchPositions();
-    fetchTrades();
-    const interval = setInterval(() => {
-      fetchPositions();
-      fetchTrades();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [fetchPositions, fetchTrades]);
-
-  useEffect(() => {
-    if (ws.lastTrade) {
-      setTimeout(() => {
-        fetchPositions();
-        fetchTrades();
-      }, 500);
-    }
-  }, [ws.lastTrade, fetchPositions, fetchTrades]);
-
-  useEffect(() => {
-    if (ws.lastTrade) {
-      const t = ws.lastTrade;
-      setNotification({ message: `Fill ${t.symbol} ${t.qty} @ ${t.price}`, ts: Date.now() });
-      const timeout = setTimeout(() => setNotification(null), 3500);
-      return () => clearTimeout(timeout);
-    }
-  }, [ws.lastTrade]);
-
-  const liveQuote = quotes[activeSymbol];
-
-  const summary = useMemo(() => {
-    const totalRealized = positions.reduce((acc, p) => acc + Number(p.realizedPnl || 0), 0);
-    const grossQty = positions.reduce((acc, p) => acc + Math.abs(Number(p.qty || 0)), 0);
-    const fillCount = dbTrades.length + ws.trades.length;
-    return {
-      totalRealized,
-      grossQty,
-      fillCount,
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen(o => !o);
+      }
     };
-  }, [positions, dbTrades.length, ws.trades.length]);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Close mobile sidebar on navigation
+  const navigate = useCallback((p) => {
+    setPage(p);
+    setSidebarOpen(false);
+  }, []);
+
+  const pages = {
+    dashboard:   <Dashboard onNav={navigate} quotes={quotes} isLive={isLive} dataMode={dataMode} />,
+    networth:    <NetWorth />,
+    portfolio:   <Portfolio />,
+    markets:     <Markets quotes={quotes} dataMode={dataMode} />,
+    banking:     <Banking />,
+    ai:          <AIAdvisor />,
+    fire:        <FIRE />,
+    settings:    <Settings />,
+    patterns:    <Patterns />,
+    seasonality: <Seasonality />,
+    options:     <Options />,
+    backtest:    <Backtest />,
+  };
 
   return (
-    <div className={`app-shell density-${densityMode} page-${activePage}`}>
-      <div className="app-backdrop" />
-      <div className="app-backdrop-grid" />
-      <div className="app-backdrop-orb orb-a" />
-      <div className="app-backdrop-orb orb-b" />
-      <div className="app-backdrop-orb orb-c" />
-      <div className="app-page-halo" />
-      <div className="app-grid">
-        <Header
-          activePage={activePage}
-          onPageChange={setActivePage}
-          activeSymbol={activeSymbol}
-          onSymbolChange={setActiveSymbol}
-          notification={notification}
-          wsConnected={ws.connected}
-          dataSource={dataSource}
-          summary={summary}
-          densityMode={densityMode}
-          onDensityModeChange={setDensityMode}
+    <NavContext.Provider value={{ page, setPage: navigate }}>
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-ink/40 backdrop-blur-sm z-40 lg:hidden animate-fade-in"
+          onClick={() => setSidebarOpen(false)}
         />
+      )}
 
-        <Suspense fallback={<PageLoading />}>
-          <div key={activePage} className="page-stage animate-page-switch">
-            {activePage === 'trading' && (
-              <TradingPage
-                activeSymbol={activeSymbol}
-                activeAccount={activeAccount}
-                onAccountChange={setActiveAccount}
-                liveQuote={liveQuote}
-                ws={ws}
-                dbTrades={dbTrades}
-                positions={positions}
-                dataSource={dataSource}
-              />
-            )}
+      <Sidebar
+        active={page}
+        onNav={navigate}
+        onCommand={() => setPaletteOpen(true)}
+        mobileOpen={sidebarOpen}
+        onMobileClose={() => setSidebarOpen(false)}
+      />
 
-            {activePage === 'analysis' && (
-              <AnalysisPage
-                activeSymbol={activeSymbol}
-                liveQuote={liveQuote}
-                quotes={quotes}
-                onSymbolChange={setActiveSymbol}
-              />
-            )}
-
-            {activePage === 'backtesting' && (
-              <BacktestingPage activeSymbol={activeSymbol} />
-            )}
-
-            {activePage === 'platform' && (
-              <PlatformPage wsConnected={ws.connected} dataSource={dataSource} />
-            )}
+      <div className="lg:ml-60 min-h-screen flex flex-col transition-[margin] duration-300">
+        <TickerTape
+          quotes={quotes}
+          dataMode={dataMode}
+          isLive={isLive}
+          lastError={lastError}
+          lastUpdate={lastUpdate}
+          onMenuToggle={() => setSidebarOpen(o => !o)}
+        />
+        <main className="flex-1 px-4 sm:px-6 lg:px-9 py-6 lg:py-8 pb-12">
+          <div className="animate-fade-in" key={page}>
+            {pages[page]}
           </div>
-        </Suspense>
+        </main>
       </div>
-    </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        onNav={navigate}
+      />
+    </NavContext.Provider>
   );
 }
 
-function PageLoading() {
+export default function App() {
   return (
-    <main className="page-grid page-grid-2">
-      <section className="panel page-span-2">
-        <div className="card-body">
-          <p className="spark-note">Loading workspace...</p>
-        </div>
-      </section>
-    </main>
+    <ToastProvider>
+      <AppShell />
+    </ToastProvider>
   );
 }

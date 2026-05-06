@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: ibkr-sync-svc
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://timescaledb:5432/alphawealth}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:redpanda:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+
+server:
+  port: 8091
+
+ibkr:
+  host:                  ${IBKR_HOST:host.docker.internal}
+  port:                  ${IBKR_PORT:7497}
+  client-id:             ${IBKR_CLIENT_ID:100}
+  account:               ${IBKR_ACCOUNT:}
+  readonly:              true
+  sync-interval-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.alphatrade.ibkr: INFO
+    com.ib.client: WARN

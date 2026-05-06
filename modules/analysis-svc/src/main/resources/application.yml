@@ -5,7 +5,7 @@ spring:
   application:
     name: analysis-svc
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/alphatrade}
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/alphawealth}
     username: ${DB_USER:alphatrade}
     password: ${DB_PASS:alphatrade123}
     driver-class-name: org.postgresql.Driver
@@ -17,8 +17,10 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
+# marketdata.url - now points to live-data-svc (yfinance bridge endpoints)
+# Accepts MARKETDATA_URL or MARKET_DATA_URL env var
 marketdata:
-  url: ${MARKET_DATA_URL:http://localhost:8087}
+  url: ${MARKETDATA_URL:${MARKET_DATA_URL:http://localhost:8096}}
 
 model:
   inference:

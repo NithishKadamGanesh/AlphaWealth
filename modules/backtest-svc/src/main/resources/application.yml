@@ -5,8 +5,10 @@ spring:
   application:
     name: backtest-svc
 
+# marketdata.url - now points to live-data-svc (yfinance bridge endpoints)
+# Accepts MARKETDATA_URL or MARKET_DATA_URL env var
 marketdata:
-  url: ${MARKET_DATA_URL:http://localhost:8087}
+  url: ${MARKETDATA_URL:${MARKET_DATA_URL:http://localhost:8096}}
 
 analysis:
   url: ${ANALYSIS_URL:http://localhost:8088}

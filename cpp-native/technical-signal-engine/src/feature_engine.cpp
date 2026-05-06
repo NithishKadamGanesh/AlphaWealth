@@ -1,5 +1,6 @@
 #include "feature_engine.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <numeric>
 
@@ -50,6 +51,46 @@ std::string classify_regime(const Snapshot& snapshot) {
         return "BALANCED";
     }
     return "VOLATILE";
+}
+
+// Phase 2: richer regime label combining direction + volatility
+RegimeAnalysis analyze_regime(const std::vector<double>& closes) {
+    RegimeAnalysis ra {};
+    ra.snapshot = compute_snapshot(closes);
+
+    if (closes.size() < 25) {
+        ra.regime = "INSUFFICIENT_DATA";
+        ra.direction = "NEUTRAL";
+        ra.confidence = 0.0;
+        return ra;
+    }
+
+    const auto& s = ra.snapshot;
+
+    // Direction from trend_score sign and magnitude
+    constexpr double dir_threshold = 0.005; // ~0.5% trend score
+    if (s.trend_score > dir_threshold) ra.direction = "UP";
+    else if (s.trend_score < -dir_threshold) ra.direction = "DOWN";
+    else ra.direction = "NEUTRAL";
+
+    // Regime: high vol overrides directionality, otherwise direction wins
+    if (s.volatility_20 >= 0.025) {
+        ra.regime = "HIGH_VOL";
+    } else if (ra.direction == "UP") {
+        ra.regime = "BULL_TREND";
+    } else if (ra.direction == "DOWN") {
+        ra.regime = "BEAR_TREND";
+    } else {
+        ra.regime = "RANGING";
+    }
+
+    // Confidence: how strongly the trend dominates noise.
+    // Bound to [0, 1] via clamp; vol of 0 protected with epsilon.
+    const double eps = 1e-6;
+    const double signal_to_noise = std::abs(s.trend_score) / (s.volatility_20 + eps);
+    ra.confidence = std::clamp(signal_to_noise / 2.0, 0.0, 1.0);
+
+    return ra;
 }
 
 }  // namespace alphatrade

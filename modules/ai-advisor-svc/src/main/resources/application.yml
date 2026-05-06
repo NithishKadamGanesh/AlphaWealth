@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: ai-advisor-svc
+
+server:
+  port: 8094
+
+# LLM provider selection
+# Options: claude, openai, gemini, ollama, auto (picks first configured, falls back to ollama)
+llm:
+  provider: ${LLM_PROVIDER:auto}
+
+anthropic:
+  api-key: ${ANTHROPIC_API_KEY:}
+  model:   ${ANTHROPIC_MODEL:claude-sonnet-4-20250514}
+
+openai:
+  api-key: ${OPENAI_API_KEY:}
+  model:   ${OPENAI_MODEL:gpt-4o-mini}
+
+gemini:
+  api-key: ${GEMINI_API_KEY:}
+  model:   ${GEMINI_MODEL:gemini-2.0-flash-exp}
+
+ollama:
+  url:   ${OLLAMA_URL:http://ollama:11434}
+  model: ${OLLAMA_MODEL:llama3.1:8b-instruct-q5_K_M}
+
+# Backing services that contribute to RAG context.
+# - live-data : yfinance bridge - quotes + history (Python)
+# - cpp-engine: native C++ regime classifier - Phase 2 (no equivalent in Java/Python)
+services:
+  net-worth:  ${NET_WORTH_URL:http://net-worth-svc:8093}
+  ibkr:       ${IBKR_URL:http://ibkr-sync-svc:8091}
+  plaid:      ${PLAID_URL:http://plaid-banking-svc:8092}
+  analysis:   ${ANALYSIS_URL:http://analysis-svc:8088}
+  sentiment:  ${SENTIMENT_URL:http://sentiment-svc:8097}
+  fingpt:     ${FINGPT_URL:http://fingpt-svc:8098}
+  live-data:  ${LIVE_DATA_URL:http://live-data-svc:8096}
+  cpp-engine: ${CPP_ENGINE_URL:http://cpp-signal-engine:9000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+logging:
+  level:
+    com.alphatrade.advisor: INFO

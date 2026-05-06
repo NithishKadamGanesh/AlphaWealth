@@ -15,7 +15,14 @@
     <artifactId>alphatrade-engine</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>pom</packaging>
-    <name>AlphaTrade Engine</name>
+    <name>AlphaWealth Command Center</name>
+    <description>
+        Self-hosted personal-finance OS with live market intelligence and a
+        GPU-accelerated AI advisor. See ARCHITECTURE.md for the canonical
+        architecture. Note: the Python services (live-data-svc, sentiment-svc,
+        fingpt-svc, model-svc) and the C++ engine are not part of this Maven
+        reactor; they are built directly via their own Dockerfiles.
+    </description>
 
     <properties>
         <java.version>21</java.version>
@@ -26,15 +33,31 @@
     </properties>
 
     <modules>
+        <!-- Shared library used by every Java service -->
         <module>modules/common</module>
+
+        <!-- AlphaWealth Command Center: default profile, monitoring/advisory -->
+        <module>modules/analysis-svc</module>
+        <module>modules/backtest-svc</module>
+        <module>modules/api-gw-graphql</module>
+        <module>modules/ibkr-sync-svc</module>
+        <module>modules/plaid-banking-svc</module>
+        <module>modules/net-worth-svc</module>
+        <module>modules/ai-advisor-svc</module>
+        <module>modules/alerts-svc</module>
+
+        <!--
+          Legacy trading services from the original alphatrade-engine project.
+          Disabled by default in docker-compose.yml (gated behind
+          --profile trading). Kept in the reactor so they continue to build
+          and so the trading profile can be revived without code archaeology.
+          See ARCHITECTURE.md "Lineage" section.
+        -->
         <module>modules/order-gateway-svc</module>
         <module>modules/risk-svc</module>
         <module>modules/match-engine-svc</module>
         <module>modules/portfolio-svc</module>
-        <module>modules/api-gw-graphql</module>
         <module>modules/market-data-svc</module>
-        <module>modules/analysis-svc</module>
-        <module>modules/backtest-svc</module>
     </modules>
 
     <dependencyManagement>

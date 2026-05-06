@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: plaid-banking-svc
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://timescaledb:5432/alphawealth}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:redpanda:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+server:
+  port: 8092
+
+plaid:
+  client-id: ${PLAID_CLIENT_ID:}
+  secret:    ${PLAID_SECRET:}
+  env:       ${PLAID_ENV:sandbox}     # sandbox / development / production
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+logging:
+  level:
+    com.alphatrade.plaid: INFO

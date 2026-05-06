@@ -1,262 +1,147 @@
-# AlphaTrade Engine
+# AlphaWealth Command Center
 
-A multi-service **quant trading and market-analysis platform** built around an event-driven Java backend, a Python research/model layer, and a modern React trading workstation.
+A self-hosted personal finance OS with live market intelligence and a
+GPU-accelerated AI advisor. Default deployment is monitoring and analytics
+only - it does not execute trades.
 
-It combines:
-- real-time simulated order routing, risk validation, matching, and portfolio accounting
-- Alpha Vantage-powered market-data ingestion with technical analysis and backtesting services
-- a Python inference service plus room for future native C++ acceleration
-- observability via Prometheus and Grafana
+For the canonical architecture, service inventory, port map, and design
+rationale, see [ARCHITECTURE.md](./ARCHITECTURE.md). This README is the
+quick-start.
 
-The repo now also includes:
-- a dedicated `python-research/` workspace for NumPy/Pandas/SciPy/Numba-based research
-- a Python model inference service for live technical suggestions
-- TimescaleDB-compatible persistence via PostgreSQL
-- Prometheus and Grafana for backend observability
-- additional services for market data, analysis, and backtesting
+## What you get
 
-## Architecture
+- **Net worth** aggregator pulling IBKR holdings + Plaid banking + manual entries
+- **Markets** page with real yfinance candles, support/resistance overlays,
+  multi-timeframe convergence, pattern detection
+- **FinBERT** scoring every news headline (GPU, ~10ms per article)
+- **FinGPT-Forecaster** generating next-week directional predictions on demand
+- **AI Advisor** with 4 swappable LLM backends:
+  - `claude` - Anthropic Claude Sonnet (paid, best quality)
+  - `openai` - GPT-4o-mini (paid, cheap)
+  - `gemini` - Gemini 2.0 Flash (free tier, 15 RPM)
+  - `ollama` - Llama 3.1 8B Q5_K_M, local on your GPU (free, default)
+- **Backtester** for 7 built-in strategies
+- **Spending tracker**, **FIRE calculator**, **options analyzer**, **seasonality**
 
-```
-┌─────────────┐     ┌──────────────┐     ┌───────────────┐     ┌──────────────┐
-│  React UI   │────▶│ Order Gateway│────▶│   Redpanda    │────▶│   Risk SVC   │
-│  (port 3000)│     │  (port 8081) │     │ (port 19092)  │     │  (port 8082) │
-└──────┬──────┘     └──────────────┘     └───────┬───────┘     └──────┬───────┘
-       │                                         │                     │
-       │  WebSocket + GraphQL                    │                     │
-       │                                         │              orders.valid
-       ▼                                         ▼                     │
-┌──────────────┐     ┌──────────────┐     ┌───────────────┐           │
-│  GraphQL API │◀───▶│  PostgreSQL  │◀────│ Portfolio SVC │◀──────────┤
-│  (port 8085) │     │  (port 5432) │     │  (port 8084)  │           │
-└──────────────┘     └──────────────┘     └───────────────┘           │
-                                                ▲                      │
-                                          trades.fills                 ▼
-                                                │              ┌───────────────┐
-                                                └──────────────│ Match Engine  │
-                                                               │  (port 8083)  │
-                                                               └───────────────┘
-```
+The UI is 12 pages of React. Every backend hook exposes a `dataMode` field
+(`live | stale | simulated | error`) and the `TickerTape` always shows the
+current mode so you can never mistake fallback ticks for real prices.
 
-**Data Flow**: Order Gateway → `orders.raw` → Risk SVC → `orders.valid` → Match Engine → `trades.fills` → Portfolio SVC → PostgreSQL → GraphQL API → React UI
+## Hardware target
 
-## Tech Stack
+The AI stack is calibrated for **8GB GPUs**. Tested on RTX 2080 SUPER. Larger
+cards (12-24GB) will work fine and let you run bigger Ollama models. CPU-only
+deployments will work for everything except the LLM services.
 
-| Layer         | Technology                            |
-|---------------|---------------------------------------|
-| Language      | Java 21, Spring Boot 3.3              |
-| Build         | Maven multi-module                    |
-| Messaging     | Redpanda (Kafka-compatible)           |
-| Database      | PostgreSQL 16                         |
-| Cache         | Redis 7 (available for extension)     |
-| Query API     | Spring GraphQL                        |
-| Real-time     | WebSocket (Kafka → browser)           |
-| Frontend      | React 18, Vite, Tailwind, Recharts    |
-| Containers    | Docker Compose                        |
+## Quick start
 
-## Services
+```cmd
+cd C:\Users\nithi\OneDrive\Desktop\alphatrade-engine
 
-| Service             | Port | Responsibility                                                      |
-|---------------------|------|---------------------------------------------------------------------|
-| `order-gateway-svc` | 8081 | REST POST `/api/v1/orders` → publishes to `orders.raw`             |
-| `risk-svc`          | 8082 | Validates orders (qty, price, notional) → `orders.valid`/`reject`  |
-| `match-engine-svc`  | 8083 | Price-time priority matching → `trades.fills` + `orders.updates`   |
-| `portfolio-svc`     | 8084 | Consumes fills → upserts positions and trades into PostgreSQL      |
-| `api-gw-graphql`    | 8085 | GraphQL queries + WebSocket bridge for real-time UI feed           |
-| `ui`                | 3000 | React trading terminal dashboard                                    |
+REM 1. Verify Docker can see your GPU (optional but recommended)
+docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
 
-## Kafka Topics
+REM 2. Configure secrets (all optional - defaults work)
+copy .env.example .env
 
-| Topic             | Key       | Purpose                              |
-|-------------------|-----------|--------------------------------------|
-| `orders.raw`      | orderId   | Raw orders from gateway              |
-| `orders.valid`    | orderId   | Risk-approved orders                 |
-| `orders.reject`   | orderId   | Risk-rejected orders                 |
-| `orders.updates`  | orderId   | Order status changes                 |
-| `trades.fills`    | symbol    | Executed trade fills                 |
-| `book.snapshots`  | symbol    | Order book depth snapshots           |
+REM 3. Build the UI cleanly (first time, or after package.json changes)
+cd ui
+del /s /q node_modules 2>nul
+del package-lock.json 2>nul
+npm install
+npm run build
+cd ..
 
-## Quick Start
-
-### Prerequisites
-
-- Docker & Docker Compose
-- Java 21 (for local dev only)
-- Maven 3.9+ (for local dev only)
-- Node.js 20+ (for local UI dev only)
-
-### Option 1: Full Docker Compose (recommended)
-
-```bash
-# Clone and enter the repo
-cd alphatrade-engine
-
-# Build and start everything
+REM 4. Build and start everything
 docker compose up --build -d
 
-# Wait ~60s for all services to initialize, then run the smoke test
-chmod +x test-smoke.sh
-./test-smoke.sh
+REM 5. Pull Ollama models one-time (~5.7GB)
+docker exec alphawealth-ollama ollama pull llama3.1:8b-instruct-q5_K_M
+
+REM 6. Open the UI
+start http://localhost:3000
 ```
 
-Services will be available at:
-- **Trading UI**: http://localhost:3000
-- **GraphiQL**: http://localhost:8085/graphiql
-- **Order Gateway**: http://localhost:8081/api/v1/orders
-- **Health checks**: http://localhost:8081/actuator/health
+The first `/forecast/{symbol}` request triggers a one-time ~13GB FinGPT model
+download. Subsequent forecasts run in 3-15 seconds.
 
-### Option 2: Infrastructure in Docker, services locally
+## Default profile vs. trading profile
 
-```bash
-# Start only infrastructure
-docker compose up redpanda redpanda-init postgres redis -d
+```cmd
+REM Default: monitoring + AI only
+docker compose up -d
 
-# Wait for Redpanda to be healthy
-sleep 15
-
-# Build all Java modules
-mvn clean install -DskipTests
-
-# Start each service in a separate terminal
-cd modules/order-gateway-svc && mvn spring-boot:run
-cd modules/risk-svc && mvn spring-boot:run
-cd modules/match-engine-svc && mvn spring-boot:run
-cd modules/portfolio-svc && mvn spring-boot:run
-cd modules/api-gw-graphql && mvn spring-boot:run
-
-# Start the UI dev server (separate terminal)
-cd ui && npm install && npm run dev
+REM With legacy trading services enabled
+docker compose --profile trading up -d
 ```
 
-## Testing the Flow
+The trading services (`order-gateway`, `risk-svc`, `match-engine`,
+`portfolio-svc`) are preserved from the original alphatrade-engine project but
+are not part of the current product. See ARCHITECTURE.md for context.
 
-### Manual curl test
+## Optional integrations
 
-```bash
-# 1. Submit a LIMIT BUY
-curl -X POST http://localhost:8081/api/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "clientId": "ALICE",
-    "symbol": "AAPL",
-    "side": "BUY",
-    "type": "LIMIT",
-    "qty": 100,
-    "price": 150.00,
-    "timeInForce": "DAY"
-  }'
+Add to `.env`:
 
-# 2. Submit a LIMIT SELL that crosses (same or lower price)
-curl -X POST http://localhost:8081/api/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "clientId": "BOB",
-    "symbol": "AAPL",
-    "side": "SELL",
-    "type": "LIMIT",
-    "qty": 100,
-    "price": 150.00,
-    "timeInForce": "DAY"
-  }'
+| Feature              | Variable(s)                                  | Cost         |
+|----------------------|----------------------------------------------|--------------|
+| Real IBKR holdings   | `IBKR_PORT=7497` + run TWS Gateway           | Free with IB |
+| Real Chase via Plaid | `PLAID_CLIENT_ID`, `PLAID_SECRET`            | Free dev tier|
+| Claude advisor       | `ANTHROPIC_API_KEY=sk-ant-...`               | Paid usage   |
+| GPT-4 advisor        | `OPENAI_API_KEY=sk-...`                      | Paid usage   |
+| Gemini advisor       | `GEMINI_API_KEY=...`                         | Free tier    |
+| HuggingFace gated    | `HF_TOKEN=hf_...`                            | Free token   |
+| Email alerts         | `RESEND_API_KEY`, `ALERT_TO_EMAIL`           | Free 3000/mo |
 
-# Wait 2-3 seconds, then query positions
-curl -X POST http://localhost:8085/graphql \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ positions { accountId symbol qty avgPx realizedPnl } }"}'
+## Troubleshooting
 
-# Query trades
-curl -X POST http://localhost:8085/graphql \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ trades { tradeId symbol side qty price ts } }"}'
+**Frontend `npm run build` fails with module-not-found errors**
+The lockfile may be out of sync with `package.json`. Delete `ui/node_modules`
+and `ui/package-lock.json`, then `npm install` again.
+
+**Docker can't see GPU**
+Verify with `docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi`.
+On Windows, you need Docker Desktop with WSL2 backend and the
+nvidia-container-toolkit installed inside WSL2.
+
+**fingpt-svc OOMs on first forecast**
+Lower `MAX_VRAM_GB` in `docker-compose.yml` from 6 to 5, or close other
+GPU-using applications (games, browsers with hardware acceleration).
+
+**Ollama: "model not found"**
+Run `docker exec alphawealth-ollama ollama pull llama3.1:8b-instruct-q5_K_M`.
+
+**UI shows STALE or SIMULATED badge**
+The relevant backend service is unreachable. Check
+`docker compose ps` and `docker compose logs <service>`. The UI is being
+honest with you - it's not real data.
+
+## Project layout
+
 ```
-
-### Automated smoke test
-
-```bash
-chmod +x test-smoke.sh
-./test-smoke.sh
+alphatrade-engine/
+  docker-compose.yml          14-service orchestration with GPU passthrough
+  ARCHITECTURE.md             canonical architecture doc (read this)
+  .env.example                all configuration knobs
+  README.md                   you are here
+  ui/                         React frontend (Vite, Tailwind, recharts)
+  modules/
+    live-data-svc/            yfinance bridge (Python)
+    analysis-svc/             technical analytics (Java)
+    backtest-svc/             strategy backtester (Java)
+    ai-advisor-svc/           multi-LLM advisor with RAG (Java)
+    sentiment-svc/            FinBERT GPU service (Python)
+    fingpt-svc/               FinGPT-Forecaster GPU service (Python)
+    ibkr-sync-svc/            IBKR integration (Java)
+    plaid-banking-svc/        Plaid integration (Java)
+    net-worth-svc/            aggregator (Java)
+    alerts-svc/               Resend email (Java)
+    order-gateway-svc/        legacy trading: order intake (Java)
+    risk-svc/                 legacy trading: risk checks (Java)
+    match-engine-svc/         legacy trading: matching simulator (Java)
+    portfolio-svc/            legacy trading: fills/positions (Java)
+    api-gw-graphql/           GraphQL gateway (Java)
+  python-research/            research model server
+  cpp-native/                 C++ technical signal engine
+  infra/                      postgres init, prometheus, grafana provisioning
 ```
-
-## Matching Engine Design
-
-The matching engine implements **price-time priority** (FIFO):
-
-- **Bids** sorted highest price first (TreeMap with reverse comparator)
-- **Asks** sorted lowest price first (TreeMap with natural ordering)
-- At the same price level, orders are matched in arrival order (LinkedList FIFO)
-- **LIMIT orders**: match only if prices cross (bid >= ask)
-- **MARKET orders**: match against best available price
-- **Fill price**: always the passive (resting) order's price (maker price)
-- **Time-in-Force**: DAY (rest on book), IOC (cancel remaining), FOK (fill completely or cancel)
-
-The engine is designed as a standalone component behind a Kafka consume/produce contract, so it can be replaced by a C++ implementation without changing upstream or downstream services.
-
-## Database Schema
-
-```sql
-positions(account_id, symbol, qty, avg_px, realized_pnl)
-  PK: (account_id, symbol)
-
-trades(trade_id, order_id, account_id, symbol, side, qty, price, ts)
-  PK: trade_id
-  IDX: (account_id, symbol, ts)
-```
-
-## UI Features
-
-The React trading terminal includes:
-
-- **Order Entry** panel with BUY/SELL toggle, order type, TIF, quick-qty buttons
-- **Order Book** depth visualization with bid/ask bars and spread indicator
-- **Price Chart** using Recharts with real-time tick data
-- **Trade Blotter** showing executed fills with live flash animation
-- **Positions** panel with PnL tracking
-- **Order Feed** showing real-time order status transitions
-- **System Status** with WebSocket connection indicator
-- **Real-time WebSocket** feed bridging Kafka → browser
-
-## Extension Points
-
-This platform is designed for the following enhancements:
-
-- **C++ matching engine**: Replace `match-engine-svc` with a native engine; the Kafka contract (`orders.valid` in → `trades.fills` + `orders.updates` out) stays the same
-- **Avro/Protobuf**: Swap JSON serialization for schema-registry-backed Avro
-- **Redis caching**: Add order state caching and rate limiting via the Redis instance
-- **Market data**: Add a market data feed service generating synthetic prices
-- **Strategy engine**: Build algorithmic trading strategies that consume market data and emit orders
-- **Authentication**: Add JWT-based auth to the API gateway
-- **Horizontal scaling**: Run multiple match engine instances with symbol-based partition assignment
-- **Metrics**: Add Prometheus + Grafana dashboards for latency, throughput, and fill rates
-
-## Platform Additions
-
-### Python research workspace
-
-Use the new `python-research/` directory for strategy prototyping and numerical analysis:
-
-```bash
-cd python-research
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
-python -m alphatrade_research.examples.sma_backtest
-```
-
-Run the model inference service locally:
-
-```bash
-cd python-research
-python -m alphatrade_research.model_service
-```
-
-### Observability
-
-The Docker stack now includes:
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3001
-
-Spring services expose metrics through `/actuator/prometheus`.
-
-### Environment setup
-
-Start from `.env.example` when configuring local secrets and API keys.
