@@ -5,7 +5,25 @@ const env = (key, fallback) => JSON.stringify(process.env[key] || fallback);
 
 export default defineConfig({
   plugins: [react()],
-  server: { port: 3000, host: "0.0.0.0" },
+  server: {
+    port: 3000,
+    host: "0.0.0.0",
+    proxy: {
+      "/ibkr-portal": {
+        target: "https://localhost:5001",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/ibkr-portal/, ""),
+        secure: false,
+        ws: true,
+      },
+      "/sso": {
+        target: "https://localhost:5001",
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
+    },
+  },
   define: {
     "import.meta.env.VITE_LIVE_DATA_URL":  env("VITE_LIVE_DATA_URL",  "http://localhost:8096"),
     "import.meta.env.VITE_ANALYSIS_URL":   env("VITE_ANALYSIS_URL",   "http://localhost:8088"),

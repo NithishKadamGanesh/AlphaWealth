@@ -150,15 +150,15 @@ class NetWorthAggregator {
         }
     }
 
-    @KafkaListener(topics = "plaid.balances", groupId = "net-worth-svc")
-    public void onPlaidBalance(String json) {
+    @KafkaListener(topics = {"teller.balances", "plaid.balances"}, groupId = "net-worth-svc")
+    public void onBankBalance(String json) {
         try {
             JsonNode node = mapper.readTree(json);
             String id = node.get("id").asText();
-            BigDecimal balance = new BigDecimal(node.get("balance").asText());
+            BigDecimal balance = new BigDecimal(node.get("balance").toString());
             plaidBalances.put(id, balance);
         } catch (Exception e) {
-            log.error("Failed to parse Plaid balance", e);
+            log.error("Failed to parse bank balance", e);
         }
     }
 
@@ -250,5 +250,18 @@ class NetWorthController {
     public ManualLiability addManualLiability(@RequestBody ManualLiability liab) {
         if (liab.getAsOfDate() == null) liab.setAsOfDate(LocalDate.now());
         return manualLiabRepo.save(liab);
+    }
+}
+
+@RestController
+@CrossOrigin(origins = "*")
+class NetWorthHealthController {
+
+    @GetMapping("/health")
+    public Map<String, Object> health() {
+        return Map.of(
+                "status", "healthy",
+                "service", "net-worth-svc"
+        );
     }
 }

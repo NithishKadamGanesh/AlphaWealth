@@ -5,6 +5,7 @@ import { Card } from "../components/ui/Card";
 import { Tag, Pulse } from "../components/ui/Tag";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Button } from "../components/ui/Button";
+import { BrokerConnections } from "../components/BrokerConnections";
 import { cn } from "../lib/cn";
 
 const AI_ADVISOR_URL = import.meta.env.VITE_AI_ADVISOR_URL || "http://localhost:8094";
@@ -23,7 +24,7 @@ const SERVICES = [
   { name: "analysis-svc",      port: 8088, type: "core", desc: "Patterns — S/R — seasonality — options — MTF" },
   { name: "backtest-svc",      port: 8089, type: "core", desc: "Strategy backtester" },
   { name: "model-svc",         port: 8090, type: "core", desc: "Python model server with C++ blending" },
-  { name: "ibkr-sync-svc",     port: 8091, type: "core", desc: "Real Interactive Brokers sync" },
+  { name: "ibkr-sync-svc",     port: 8091, type: "core", desc: "Interactive Brokers gateway sync" },
   { name: "plaid-banking-svc", port: 8092, type: "core", desc: "Real Plaid Chase integration" },
   { name: "net-worth-svc",     port: 8093, type: "core", desc: "Net worth aggregator + history" },
   { name: "ai-advisor-svc",    port: 8094, type: "core", desc: "Multi-model LLM advisor" },
@@ -75,6 +76,12 @@ export const Settings = () => {
   return (
     <div className="space-y-6 max-w-[1400px]">
       <PageHeader title="Settings & Connections" subtitle="LLM provider — service health — GPU status — integrations" />
+
+      {/* Broker Integrations */}
+      <div>
+        <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-3">Broker Connections</div>
+        <BrokerConnections />
+      </div>
 
       {/* GPU Status */}
       <Card className={cn("animate-fade-in", gpuOnDevice ? "bg-ink text-white border-ink" : "")}>
@@ -236,8 +243,8 @@ export const Settings = () => {
           { name: "FinBERT (local GPU)", desc: "Financial news sentiment, ~10ms/article",     status: "live",   variant: "accent",   icon: "sparkle",   setup: "Auto-downloads on first run (~430MB)" },
           { name: "FinGPT-Forecaster",   desc: "Next-week directional predictions on GPU",    status: "live",   variant: "accent",   icon: "target",    setup: "Auto-downloads on first /forecast (~13GB)" },
           { name: "Ollama (local GPU)",  desc: "Free local LLM (Llama 3.1 8B Q5_K_M)",       status: "live",   variant: "positive", icon: "shield",    setup: "First start pulls ~5.7GB model" },
-          { name: "Interactive Brokers", desc: "TWS API — Read-only sync every 30s",         status: "config", variant: "warning",  icon: "briefcase", setup: "Run TWS Gateway + set IBKR_PORT in .env" },
-          { name: "Plaid — Chase",       desc: "Transactions, balances, categorization",     status: "config", variant: "warning",  icon: "bank",      setup: "Add PLAID_CLIENT_ID + PLAID_SECRET" },
+          { name: "Interactive Brokers", desc: "Client Portal gateway — read-only snapshot sync", status: "config", variant: "warning",  icon: "briefcase", setup: "Start the Client Portal gateway and sign in from Broker Connections" },
+          { name: "Teller — Banking",     desc: "Real bank transactions, balances, spending",  status: "config", variant: "warning",  icon: "bank",      setup: "Add TELLER_APP_ID + cert to secrets/teller/" },
           { name: "Claude API",          desc: "Premium AI Advisor (paid)",                  status: "config", variant: "warning",  icon: "sparkle",   setup: "Add ANTHROPIC_API_KEY (or use free Ollama)" },
           { name: "C++ Signal Engine",   desc: "Native indicators — ZMQ pub :5555",          status: "live",   variant: "positive", icon: "cpu",       setup: "Auto-builds in Docker" },
           { name: "Resend",              desc: "Email alerts — 3000/mo free tier",           status: "config", variant: "warning",  icon: "bell",      setup: "Add RESEND_API_KEY (optional)" },

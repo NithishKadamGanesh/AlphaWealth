@@ -11,14 +11,15 @@ import org.springframework.stereotype.Service;
 public class IbkrSyncScheduler {
     private final IbkrConnectionService ibkr;
 
+    // Keep the CP gateway session alive
+    @Scheduled(fixedRate = 60_000)
+    public void tickle() {
+        ibkr.tickle();
+    }
+
+    // Check auth and sync positions on configured interval
     @Scheduled(fixedRateString = "${ibkr.sync-interval-seconds:30}000")
     public void syncPositions() {
-        if (!ibkr.isConnected()) {
-            log.debug("Skipping sync — TWS not connected");
-            return;
-        }
-        log.info("→ Polling IBKR positions and account summary");
-        ibkr.requestPositions();
-        ibkr.requestAccountSummary();
+        ibkr.checkAuthAndSync();
     }
 }

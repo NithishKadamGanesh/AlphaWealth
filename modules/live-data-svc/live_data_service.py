@@ -23,6 +23,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote as url_quote
 import uvicorn
 
 logging.basicConfig(level=logging.INFO,
@@ -37,7 +38,11 @@ app.add_middleware(CORSMiddleware,
 
 executor = ThreadPoolExecutor(max_workers=8)
 _quote_cache: dict = {}
-_cache_ttl = 5  # seconds
+_bars_cache: dict = {}
+_fear_greed_cache: dict = {}
+_quote_cache_ttl = 5       # seconds
+_bars_cache_ttl = 300      # seconds
+_fear_greed_ttl = 900      # seconds
 
 
 # ─── Models ──────────────────────────────────────────────────
@@ -72,44 +77,118 @@ class CompanyProfile(BaseModel):
 
 # ─── Live Quotes ─────────────────────────────────────────────
 
+def _cache_is_fresh(entry: Optional[dict], ttl_seconds: int) -> bool:
+    return bool(entry) and (datetime.now() - entry["fetched"]).total_seconds() < ttl_seconds
+
+
+def _cache_put(cache: dict, key: str, data: dict | list) -> dict | list:
+    cache[key] = {"data": data, "fetched": datetime.now()}
+    return data
+
+
+def _fetch_yahoo_chart(symbol: str, period: str, interval: str) -> dict:
+    encoded = url_quote(symbol, safe="")
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}"
+        f"?range={period}&interval={interval}&includePrePost=false&events=div,splits"
+    )
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+    r.raise_for_status()
+    payload = r.json()
+    chart = payload.get("chart", {})
+    if chart.get("error"):
+        raise ValueError(chart["error"].get("description") or f"Yahoo chart error for {symbol}")
+    result = (chart.get("result") or [None])[0]
+    if not result:
+        raise ValueError(f"No chart data for {symbol}")
+    return result
+
+
+def _bars_from_chart(chart: dict, interval: str) -> list:
+    timestamps = chart.get("timestamp") or []
+    quote = ((chart.get("indicators") or {}).get("quote") or [{}])[0]
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
+
+    bars = []
+    for i, ts in enumerate(timestamps):
+        close = closes[i] if i < len(closes) else None
+        open_ = opens[i] if i < len(opens) else None
+        high = highs[i] if i < len(highs) else None
+        low = lows[i] if i < len(lows) else None
+        if close is None or open_ is None or high is None or low is None:
+            continue
+
+        dt = datetime.fromtimestamp(ts)
+        label = dt.strftime("%Y-%m-%d")
+        if interval.endswith("m") or interval.endswith("h"):
+            label = dt.isoformat(timespec="minutes")
+
+        bars.append({
+            "date": label,
+            "open": round(float(open_), 2),
+            "high": round(float(high), 2),
+            "low": round(float(low), 2),
+            "close": round(float(close), 2),
+            "volume": int(volumes[i] or 0) if i < len(volumes) else 0,
+        })
+    return bars
+
+
+def _quote_from_chart(symbol: str, chart: dict) -> dict:
+    bars = _bars_from_chart(chart, "1d")
+    if not bars:
+        raise ValueError(f"No quote bars for {symbol}")
+
+    meta = chart.get("meta") or {}
+    last_bar = bars[-1]
+    prev_close = meta.get("chartPreviousClose")
+    if prev_close in (None, 0) and len(bars) > 1:
+        prev_close = bars[-2]["close"]
+    if prev_close in (None, 0):
+        prev_close = last_bar["close"]
+
+    current = meta.get("regularMarketPrice", last_bar["close"])
+    change = float(current) - float(prev_close)
+    change_pct = (change / float(prev_close) * 100) if prev_close else 0
+
+    year_low = meta.get("fiftyTwoWeekLow", last_bar["low"])
+    year_high = meta.get("fiftyTwoWeekHigh", last_bar["high"])
+
+    return {
+        "symbol": symbol.upper(),
+        "price": round(float(current), 2),
+        "change": round(float(change), 2),
+        "change_pct": round(float(change_pct), 2),
+        "open": last_bar["open"],
+        "high": last_bar["high"],
+        "low": last_bar["low"],
+        "prev_close": round(float(prev_close), 2),
+        "volume": int(meta.get("regularMarketVolume") or last_bar["volume"] or 0),
+        "market_cap": meta.get("marketCap"),
+        "pe_ratio": None,
+        "day_range": f"{last_bar['low']:.2f} - {last_bar['high']:.2f}",
+        "year_range": f"{float(year_low):.2f} - {float(year_high):.2f}",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 def _fetch_quote_sync(symbol: str) -> dict:
     cache_key = f"quote:{symbol}"
     cached = _quote_cache.get(cache_key)
-    if cached and (datetime.now() - cached["fetched"]).seconds < _cache_ttl:
+    if _cache_is_fresh(cached, _quote_cache_ttl):
         return cached["data"]
 
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        hist = ticker.history(period="2d", interval="1d")
-        if hist.empty:
-            raise ValueError(f"No data for {symbol}")
-
-        prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else float(hist["Close"].iloc[-1])
-        last_close = float(hist["Close"].iloc[-1])
-        current = info.get("regularMarketPrice", last_close)
-        change = current - prev_close
-        change_pct = (change / prev_close) * 100 if prev_close else 0
-
-        data = {
-            "symbol":      symbol.upper(),
-            "price":       round(current, 2),
-            "change":      round(change, 2),
-            "change_pct":  round(change_pct, 2),
-            "open":        round(float(hist["Open"].iloc[-1]), 2),
-            "high":        round(float(hist["High"].iloc[-1]), 2),
-            "low":         round(float(hist["Low"].iloc[-1]), 2),
-            "prev_close":  round(prev_close, 2),
-            "volume":      int(hist["Volume"].iloc[-1]),
-            "market_cap":  info.get("marketCap"),
-            "pe_ratio":    info.get("trailingPE"),
-            "day_range":   f"{round(float(hist['Low'].iloc[-1]), 2)} - {round(float(hist['High'].iloc[-1]), 2)}",
-            "year_range":  f"{round(info.get('fiftyTwoWeekLow', 0), 2)} - {round(info.get('fiftyTwoWeekHigh', 0), 2)}",
-            "timestamp":   datetime.now().isoformat(),
-        }
-        _quote_cache[cache_key] = {"data": data, "fetched": datetime.now()}
-        return data
+        data = _quote_from_chart(symbol, _fetch_yahoo_chart(symbol, "5d", "1d"))
+        return _cache_put(_quote_cache, cache_key, data)
     except Exception as e:
+        if cached:
+            log.warning(f"Using cached quote for {symbol} after live fetch failed: {e}")
+            return {**cached["data"], "stale": True, "timestamp": datetime.now().isoformat()}
         log.error(f"Failed to fetch {symbol}: {e}")
         raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found or fetch failed")
 
@@ -131,18 +210,22 @@ async def get_multiple_quotes(symbols: str):
 
 def _bars_for(symbol: str, period: str, interval: str) -> list:
     """Common bar fetcher used by /history, /api/marketdata/candles."""
-    ticker = yf.Ticker(symbol)
-    hist = ticker.history(period=period, interval=interval)
-    if hist.empty:
+    cache_key = f"bars:{symbol}:{period}:{interval}"
+    cached = _bars_cache.get(cache_key)
+    if _cache_is_fresh(cached, _bars_cache_ttl):
+        return cached["data"]
+
+    try:
+        bars = _bars_from_chart(_fetch_yahoo_chart(symbol, period, interval), interval)
+        if not bars:
+            raise ValueError(f"No bars for {symbol} {period}/{interval}")
+        return _cache_put(_bars_cache, cache_key, bars)
+    except Exception as e:
+        if cached:
+            log.warning(f"Using cached bars for {symbol} {period}/{interval} after live fetch failed: {e}")
+            return cached["data"]
+        log.error(f"History fetch failed for {symbol} {period}/{interval}: {e}")
         return []
-    return [{
-        "date":   idx.strftime("%Y-%m-%d"),
-        "open":   round(float(row["Open"]), 2),
-        "high":   round(float(row["High"]), 2),
-        "low":    round(float(row["Low"]), 2),
-        "close":  round(float(row["Close"]), 2),
-        "volume": int(row["Volume"]),
-    } for idx, row in hist.iterrows()]
 
 
 @app.get("/history/{symbol}")
@@ -283,22 +366,33 @@ async def get_market_news():
 @app.get("/fear-greed")
 async def get_fear_greed():
     def _fetch():
+        cached = _fear_greed_cache.get("current")
+        if _cache_is_fresh(cached, _fear_greed_ttl):
+            return cached["data"]
         try:
             r = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
                              headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            r.raise_for_status()
             data = r.json()
             current = data.get("fear_and_greed", {})
-            return {
+            score = current.get("score")
+            if score is None:
+                raise ValueError("Fear & Greed score missing from response")
+            payload = {
                 "score":             current.get("score", 50),
                 "rating":            current.get("rating", "neutral"),
                 "previous_close":    current.get("previous_close"),
                 "previous_1_week":   current.get("previous_1_week"),
                 "previous_1_month":  current.get("previous_1_month"),
                 "timestamp":         current.get("timestamp"),
+                "available":         True,
             }
+            return _cache_put(_fear_greed_cache, "current", payload)
         except Exception as e:
             log.error(f"Fear & Greed fetch failed: {e}")
-            return {"score": 50, "rating": "neutral", "error": str(e)}
+            if cached:
+                return {**cached["data"], "available": True, "stale": True}
+            return {"available": False, "error": str(e)}
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, _fetch)
 

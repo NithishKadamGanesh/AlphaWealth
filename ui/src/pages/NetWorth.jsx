@@ -5,51 +5,53 @@ import {
 import { T } from "../lib/tokens";
 import { Icon } from "../components/Icon";
 import { Card } from "../components/ui/Card";
-import { Tag, Pulse } from "../components/ui/Tag";
+import { Tag } from "../components/ui/Tag";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Sparkline } from "../components/ui/Sparkline";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { cn, fmtMoney } from "../lib/cn";
 import { useNetWorth } from "../hooks/useNetWorth";
-import { ASSETS, LIABILITIES } from "../lib/mockData";
 
 const ALLOC_COLORS = [
   "rgb(var(--accent))", "rgb(var(--positive))", "rgb(var(--warning))",
   "rgb(var(--accent))", "#ec4899", "rgb(var(--muted))",
 ];
 
+const statusBadge = (dataMode, loading) => {
+  if (loading) return <Tag variant="warning" dot>Loading</Tag>;
+  if (dataMode === "live") return <Tag variant="positive" dot>LIVE</Tag>;
+  if (dataMode === "stale") return <Tag variant="warning">STALE</Tag>;
+  return <Tag variant="negative">OFFLINE</Tag>;
+};
+
 export const NetWorth = () => {
-  const { snapshot, history, breakdown, isReal, loading } = useNetWorth();
+  const { snapshot, history, breakdown, dataMode, loading } = useNetWorth();
 
   const allocData = [
-    { name: "Property",   value: snapshot.property,    color: ALLOC_COLORS[0] },
+    { name: "Property", value: snapshot.property, color: ALLOC_COLORS[0] },
     { name: "Investment", value: snapshot.investments, color: ALLOC_COLORS[1] },
-    { name: "Retirement", value: snapshot.retirement,  color: ALLOC_COLORS[2] },
-    { name: "Cash",       value: snapshot.cash,        color: ALLOC_COLORS[3] },
-    { name: "Crypto",     value: snapshot.crypto,      color: ALLOC_COLORS[4] },
-    { name: "Other",      value: snapshot.otherAssets, color: ALLOC_COLORS[5] },
+    { name: "Retirement", value: snapshot.retirement, color: ALLOC_COLORS[2] },
+    { name: "Cash", value: snapshot.cash, color: ALLOC_COLORS[3] },
+    { name: "Crypto", value: snapshot.crypto, color: ALLOC_COLORS[4] },
+    { name: "Other", value: snapshot.otherAssets, color: ALLOC_COLORS[5] },
   ].filter(a => a.value > 0);
 
-  const assetsList = breakdown?.manualAssets?.length > 0 ? breakdown.manualAssets : ASSETS;
-  const liabsList  = breakdown?.manualLiabilities?.length > 0 ? breakdown.manualLiabilities : LIABILITIES;
+  const assetsList = breakdown?.assets || [];
+  const liabsList = breakdown?.liabilities || [];
 
   const monthChange = history.length >= 2
-    ? history[history.length - 1].v - history[history.length - 2].v : 0;
+    ? history[history.length - 1].v - history[history.length - 2].v
+    : 0;
 
   const sparkData = history.map(h => h.v ?? 0);
+  const historyLabel = history.length > 1 ? `${history.length}-Point History` : "Current Snapshot";
 
   return (
     <div className="space-y-6 max-w-[1400px]">
       <PageHeader
         title="Net Worth Tracker"
-        subtitle="Aggregated from IBKR, Chase (Plaid), and manual entries"
-        badge={
-          <>
-            {loading && <Tag variant="warning" dot>Loading</Tag>}
-            {!loading && isReal && <Tag variant="positive" dot>LIVE</Tag>}
-            {!loading && !isReal && <Tag variant="warning">Fallback</Tag>}
-          </>
-        }
+        subtitle="Aggregated from linked broker, banking, and manual entries"
+        badge={statusBadge(dataMode, loading)}
       />
 
       {loading ? (
@@ -58,7 +60,6 @@ export const NetWorth = () => {
         </div>
       ) : (
         <>
-          {/* Hero cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 animate-fade-in">
             <Card className="bg-ink text-white border-ink">
               <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium font-mono">Net Worth</div>
@@ -80,7 +81,7 @@ export const NetWorth = () => {
               <div className="font-display text-3xl sm:text-4xl font-bold tracking-tighter mt-2 text-ink">
                 {fmtMoney(snapshot.totalAssets)}
               </div>
-              <div className="text-xs font-mono text-muted mt-2">{assetsList.length} sources</div>
+              <div className="text-xs font-mono text-muted mt-2">{assetsList.length} linked sources</div>
               <div className="mt-4 h-10">
                 <Sparkline data={sparkData} height={40} />
               </div>
@@ -91,106 +92,119 @@ export const NetWorth = () => {
               <div className="font-display text-3xl sm:text-4xl font-bold tracking-tighter mt-2 text-negative">
                 -{fmtMoney(snapshot.totalLiabilities)}
               </div>
-              <div className="text-xs font-mono text-negative/70 mt-2">{liabsList.length} loans</div>
+              <div className="text-xs font-mono text-negative/70 mt-2">{liabsList.length} manual liabilities</div>
               <div className="mt-4 h-10 flex items-center justify-center text-negative/30">
                 <Icon name="bank" size={32} />
               </div>
             </Card>
           </div>
 
-          {/* Chart + Allocation */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-slide-up" style={{ animationDelay: "100ms" }}>
             <Card className="lg:col-span-2">
               <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-6">
                 <div>
                   <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">
-                    {history.length}-Month History
+                    {historyLabel}
                   </div>
                   <div className="font-display text-xl font-bold tracking-tight mt-1">
                     {fmtMoney(snapshot.netWorth)}
                   </div>
                 </div>
-                <div className="flex gap-1.5">
-                  {["1M", "6M", "1Y", "2Y", "All"].map(p => (
-                    <button key={p} className={cn(
-                      "px-3 py-1.5 rounded-lg text-xs font-mono font-semibold transition-all",
-                      p === "2Y"
-                        ? "bg-ink text-canvas"
-                        : "text-muted border border-line hover:border-ink/20"
-                    )}>{p}</button>
-                  ))}
-                </div>
+                <Tag variant="default">{dataMode.toUpperCase()}</Tag>
               </div>
-              <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={history}>
-                  <defs>
-                    <linearGradient id="nw-grad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={T.lime} stopOpacity={0.25} />
-                      <stop offset="100%" stopColor={T.lime} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 10, fill: T.muted }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: T.muted }} axisLine={false} tickLine={false}
-                         tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
-                  <Tooltip contentStyle={{ background: T.ink, border: "none", borderRadius: 8, color: "#fff", fontSize: 12 }}
-                           formatter={v => [`$${v.toLocaleString()}`, "Net Worth"]} />
-                  <Area type="monotone" dataKey="v" stroke={T.lime} strokeWidth={3} fill="url(#nw-grad)" />
-                </AreaChart>
-              </ResponsiveContainer>
+              {history.length > 0 ? (
+                <ResponsiveContainer width="100%" height={260}>
+                  <AreaChart data={history}>
+                    <defs>
+                      <linearGradient id="nw-grad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={T.lime} stopOpacity={0.25} />
+                        <stop offset="100%" stopColor={T.lime} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
+                    <XAxis dataKey="month" tick={{ fontSize: 10, fill: T.muted }} axisLine={false} tickLine={false} />
+                    <YAxis
+                      tick={{ fontSize: 10, fill: T.muted }}
+                      axisLine={false}
+                      tickLine={false}
+                      tickFormatter={v => `$${(v / 1000).toFixed(0)}k`}
+                    />
+                    <Tooltip
+                      contentStyle={{ background: T.ink, border: "none", borderRadius: 8, color: "#fff", fontSize: 12 }}
+                      formatter={v => [`$${v.toLocaleString()}`, "Net Worth"]}
+                    />
+                    <Area type="monotone" dataKey="v" stroke={T.lime} strokeWidth={3} fill="url(#nw-grad)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-[260px] flex items-center justify-center text-xs text-muted">
+                  Net worth history will appear once snapshots accumulate.
+                </div>
+              )}
             </Card>
 
             <Card>
               <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-4">Asset Allocation</div>
-              {allocData.length > 0 && (
-                <div className="relative">
-                  <ResponsiveContainer width="100%" height={170}>
-                    <PieChart>
-                      <Pie data={allocData} dataKey="value" cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}>
-                        {allocData.map((d, i) => <Cell key={i} fill={d.color} />)}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="absolute inset-0 flex items-center justify-center flex-col pointer-events-none">
-                    <div className="text-2xs text-muted font-mono">TOTAL</div>
-                    <div className="font-display text-lg font-extrabold">${(snapshot.totalAssets/1000).toFixed(0)}k</div>
+              {allocData.length > 0 ? (
+                <>
+                  <div className="relative">
+                    <ResponsiveContainer width="100%" height={170}>
+                      <PieChart>
+                        <Pie data={allocData} dataKey="value" cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}>
+                          {allocData.map((d, i) => <Cell key={i} fill={d.color} />)}
+                        </Pie>
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="absolute inset-0 flex items-center justify-center flex-col pointer-events-none">
+                      <div className="text-2xs text-muted font-mono">TOTAL</div>
+                      <div className="font-display text-lg font-extrabold">${(snapshot.totalAssets / 1000).toFixed(0)}k</div>
+                    </div>
                   </div>
+                  <div className="mt-4 space-y-2">
+                    {allocData.map(d => (
+                      <div key={d.name} className="flex items-center gap-2 text-xs">
+                        <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: d.color }} />
+                        <span className="flex-1 text-muted">{d.name}</span>
+                        <span className="font-mono font-semibold">${(d.value / 1000).toFixed(0)}k</span>
+                        <span className="font-mono text-2xs text-muted w-9 text-right">
+                          {snapshot.totalAssets > 0 ? ((d.value / snapshot.totalAssets) * 100).toFixed(0) : 0}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="h-[240px] flex items-center justify-center text-xs text-muted">
+                  No linked assets available yet.
                 </div>
               )}
-              <div className="mt-4 space-y-2">
-                {allocData.map(d => (
-                  <div key={d.name} className="flex items-center gap-2 text-xs">
-                    <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: d.color }} />
-                    <span className="flex-1 text-muted">{d.name}</span>
-                    <span className="font-mono font-semibold">${(d.value / 1000).toFixed(0)}k</span>
-                    <span className="font-mono text-2xs text-muted w-9 text-right">
-                      {snapshot.totalAssets > 0 ? ((d.value/snapshot.totalAssets)*100).toFixed(0) : 0}%
-                    </span>
-                  </div>
-                ))}
-              </div>
             </Card>
           </div>
 
-          {/* Assets & Liabilities */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 animate-slide-up" style={{ animationDelay: "200ms" }}>
             <Card>
               <div className="flex justify-between items-center mb-4">
                 <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">Assets</div>
                 <Tag variant="positive">{assetsList.length}</Tag>
               </div>
-              <div className="space-y-2">
-                {assetsList.map((a, i) => (
-                  <div key={i} className="flex items-center gap-3 p-3 bg-canvas rounded-lg border-l-[3px] border-positive">
-                    <Icon name={a.icon || "briefcase"} size={16} color={T.lime} />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-semibold text-ink truncate">{a.name}</div>
-                      <div className="text-2xs text-muted font-mono">{a.type || "Asset"}</div>
+              {assetsList.length > 0 ? (
+                <div className="space-y-2">
+                  {assetsList.map((a) => (
+                    <div key={a.id} className="flex items-center gap-3 p-3 bg-canvas rounded-lg border-l-[3px] border-positive">
+                      <Icon name={a.icon || "briefcase"} size={16} color={T.lime} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-ink truncate">{a.name}</div>
+                        <div className="text-2xs text-muted font-mono">{a.type || "Asset"}</div>
+                      </div>
+                      <div className="font-mono text-sm font-bold tabular">{fmtMoney(a.value)}</div>
                     </div>
-                    <div className="font-mono text-sm font-bold tabular">{fmtMoney(Number(a.value) || 0)}</div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-10 text-xs text-muted">
+                  No linked assets available yet.
+                </div>
+              )}
             </Card>
 
             <Card>
@@ -198,18 +212,24 @@ export const NetWorth = () => {
                 <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">Liabilities</div>
                 <Tag variant="negative">{liabsList.length}</Tag>
               </div>
-              <div className="space-y-2">
-                {liabsList.map((l, i) => (
-                  <div key={i} className="flex items-center gap-3 p-3 bg-canvas rounded-lg border-l-[3px] border-negative">
-                    <Icon name={l.icon || "coffee"} size={16} color={T.red} />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-semibold text-ink truncate">{l.name}</div>
-                      <div className="text-2xs text-muted font-mono">{l.type || "Loan"}</div>
+              {liabsList.length > 0 ? (
+                <div className="space-y-2">
+                  {liabsList.map((l) => (
+                    <div key={l.id} className="flex items-center gap-3 p-3 bg-canvas rounded-lg border-l-[3px] border-negative">
+                      <Icon name={l.icon || "bank"} size={16} color={T.red} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-ink truncate">{l.name}</div>
+                        <div className="text-2xs text-muted font-mono">{l.type || "Liability"}</div>
+                      </div>
+                      <div className="font-mono text-sm font-bold tabular text-negative">-{fmtMoney(l.value)}</div>
                     </div>
-                    <div className="font-mono text-sm font-bold tabular text-negative">-{fmtMoney(Number(l.value) || 0)}</div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-10 text-xs text-muted">
+                  No liabilities have been added.
+                </div>
+              )}
             </Card>
           </div>
         </>

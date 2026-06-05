@@ -22,3 +22,14 @@ logs/
 coverage/
 out/
 .claude/settings.local.json
+
+# IBKR Client Portal Gateway binary distribution
+clientportal/
+
+# secrets / credentials
+secrets/
+teller.zip
+*.pem
+*.key
+*.p12
+*.keystore

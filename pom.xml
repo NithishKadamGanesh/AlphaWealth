@@ -49,7 +49,7 @@
         <!--
           Legacy trading services from the original alphatrade-engine project.
           Disabled by default in docker-compose.yml (gated behind
-          --profile trading). Kept in the reactor so they continue to build
+          profile=trading). Kept in the reactor so they continue to build
           and so the trading profile can be revived without code archaeology.
           See ARCHITECTURE.md "Lineage" section.
         -->

@@ -46,7 +46,7 @@ match-engine with a real broker connector (most likely IBKR FIX or REST).
 ### Personal-finance services
 - `net-worth-svc` (8093, Java): aggregates account balances and computes net
   worth snapshots
-- `ibkr-sync-svc` (8091, Java): pulls IBKR positions via the TWS API
+- `ibkr-sync-svc` (8091, Java): pulls IBKR positions via the Client Portal Web API
 - `plaid-banking-svc` (8092, Java): pulls Chase / banking transactions via Plaid
 - `alerts-svc` (8095, Java): email alerts via Resend
 
@@ -149,7 +149,7 @@ Every hook in `ui/src/hooks/` exposes a `dataMode` field with consistent vocabul
 - `error` - request failed, no data shown (used by hooks that should never
   fabricate, like `useSentiment` and `useForecast`)
 - `disconnected` - service reachable but external dependency offline (e.g.
-  ibkr-sync-svc up but TWS Gateway not running)
+  ibkr-sync-svc up but the Client Portal gateway not authenticated yet)
 
 Pages render mode tags via a shared helper. The `TickerTape` shows the global
 quote-feed mode at the top of every page. Hooks `console.warn` with a reason

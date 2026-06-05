@@ -23,12 +23,12 @@ server:
   port: 8091
 
 ibkr:
-  host:                  ${IBKR_HOST:host.docker.internal}
-  port:                  ${IBKR_PORT:7497}
-  client-id:             ${IBKR_CLIENT_ID:100}
-  account:               ${IBKR_ACCOUNT:}
-  readonly:              true
-  sync-interval-seconds: 30
+  cp-gateway-url:        ${IBKR_CP_GATEWAY_URL:https://host.docker.internal:5001}
+  public-login-url:      ${IBKR_PUBLIC_LOGIN_URL:https://localhost:5001}
+  sync-interval-seconds: ${IBKR_SYNC_INTERVAL:30}
+  snapshot-path:         ${IBKR_SNAPSHOT_PATH:/data/ibkr-snapshot.json}
+  request-timeout-seconds: ${IBKR_REQUEST_TIMEOUT_SECONDS:10}
+  status-refresh-seconds: ${IBKR_STATUS_REFRESH_SECONDS:8}
 
 management:
   endpoints:
@@ -42,4 +42,3 @@ management:
 logging:
   level:
     com.alphatrade.ibkr: INFO
-    com.ib.client: WARN

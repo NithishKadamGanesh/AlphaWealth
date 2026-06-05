@@ -10,6 +10,7 @@ import { Tag } from "../components/ui/Tag";
 import { Button } from "../components/ui/Button";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { cn, fmtMoney, fmtPct } from "../lib/cn";
+import { summarizeCashFlow } from "../lib/banking";
 
 import { useNetWorth } from "../hooks/useNetWorth";
 import { useBanking } from "../hooks/useBanking";
@@ -27,6 +28,7 @@ const dataModeTag = (dataMode) => {
   if (dataMode === "live")      return <Tag variant="positive" dot>Live</Tag>;
   if (dataMode === "stale")     return <Tag variant="warning">Stale</Tag>;
   if (dataMode === "simulated") return <Tag variant="default">Sandbox</Tag>;
+  if (dataMode === "disconnected") return <Tag variant="default">Disconnected</Tag>;
   if (dataMode === "error")     return <Tag variant="negative">Offline</Tag>;
   return <Tag variant="default">Loading</Tag>;
 };
@@ -37,10 +39,7 @@ export const Dashboard = ({ onNav, quotes, isLive, dataMode: quotesMode = "unkno
   const { positions, dataMode: ibkrMode = "unknown" } = useIbkrPositions();
   const [period, setPeriod] = useState("1Y");
 
-  const totalIncome = transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const totalSpend  = transactions.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-  const cashFlow    = totalIncome - totalSpend;
-  const saveRate    = totalIncome > 0 ? (cashFlow / totalIncome) * 100 : 0;
+  const { income: totalIncome, spending: totalSpend, netCashFlow: cashFlow, saveRate, spendingTransactions } = summarizeCashFlow(transactions);
 
   const monthDelta = history.length >= 2
     ? history[history.length - 1].v - history[history.length - 2].v : 0;
@@ -58,8 +57,8 @@ export const Dashboard = ({ onNav, quotes, isLive, dataMode: quotesMode = "unkno
 
   // Build activity from real data
   const recentActivity = [];
-  if (transactions.length > 0) {
-    const bigSpend = transactions.filter(t => t.amount < 0).sort((a, b) => a.amount - b.amount)[0];
+  if (spendingTransactions.length > 0) {
+    const bigSpend = [...spendingTransactions].sort((a, b) => a.amount - b.amount)[0];
     if (bigSpend) recentActivity.push({ type: "spend", text: `${bigSpend.merchant}: ${fmtMoney(bigSpend.amount)}`, time: bigSpend.date, icon: CreditCard });
   }
   if (positions.length > 0 && topMover) {
@@ -193,11 +192,11 @@ export const Dashboard = ({ onNav, quotes, isLive, dataMode: quotesMode = "unkno
             <div className="flex items-center justify-between mb-6">
               <div>
                 <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-medium text-ink">This month</h3>
+                  <h3 className="text-sm font-medium text-ink">Last 30 days</h3>
                   {dataModeTag(bankMode)}
                 </div>
                 <p className="text-xs text-muted mt-0.5">
-                  Cash flow from {transactions.length} transactions
+                  Cash flow from posted non-transfer banking activity
                 </p>
               </div>
               <button
@@ -250,7 +249,15 @@ export const Dashboard = ({ onNav, quotes, isLive, dataMode: quotesMode = "unkno
                   {dataModeTag(ibkrMode)}
                 </div>
                 <p className="text-xs text-muted mt-0.5">
-                  {ibkrMode === "live" ? "Live from IBKR" : "Sandbox"}
+                  {ibkrMode === "live"
+                    ? "Live from IBKR"
+                    : ibkrMode === "stale"
+                      ? "Last-known broker snapshot"
+                      : ibkrMode === "disconnected"
+                        ? "Connect IBKR in Settings"
+                        : ibkrMode === "error"
+                          ? "ibkr-sync-svc offline"
+                          : "Checking broker status"}
                 </p>
               </div>
               <button
