@@ -1,9 +1,10 @@
 package com.alphatrade.plaid;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.plaid.client.ApiClient;
-import com.plaid.client.model.*;
-import com.plaid.client.request.PlaidApi;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,31 +12,22 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.netty.http.client.HttpClient;
 
+import java.io.File;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Plaid Banking Service — single-file Spring Boot module
- *
- * Wires Chase (and any Plaid-supported bank) into AlphaWealth.
- * Endpoints:
- *   POST /plaid/link/token         — Create link token for Plaid Link UI
- *   POST /plaid/link/exchange      — Exchange public_token for access_token
- *   GET  /plaid/accounts           — List connected accounts
- *   GET  /plaid/transactions       — Recent transactions
- *   GET  /plaid/balances           — Current balances
- *   POST /plaid/sync               — Force resync from Plaid
- *
- * Set PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV in environment.
- * For development: env=sandbox (test creds: user_good / pass_good)
- */
 @Slf4j
 @SpringBootApplication
 @EnableScheduling
@@ -46,178 +38,293 @@ public class PlaidBankingApplication {
     }
 
     @Bean
-    public PlaidApi plaidApi(
-            @Value("${plaid.client-id}") String clientId,
-            @Value("${plaid.secret}") String secret,
-            @Value("${plaid.env:sandbox}") String env) {
+    public WebClient tellerClient(
+            @Value("${teller.cert-path:}") String certPath,
+            @Value("${teller.key-path:}") String keyPath) throws Exception {
 
-        HashMap<String, String> apiKeys = new HashMap<>();
-        apiKeys.put("clientId", clientId);
-        apiKeys.put("secret", secret);
-        apiKeys.put("plaidVersion", "2020-09-14");
-
-        ApiClient apiClient = new ApiClient(apiKeys);
-        switch (env.toLowerCase()) {
-            case "production"  -> apiClient.setPlaidAdapter(ApiClient.Production);
-            case "development" -> apiClient.setPlaidAdapter(ApiClient.Development);
-            default            -> apiClient.setPlaidAdapter(ApiClient.Sandbox);
+        SslContextBuilder builder = SslContextBuilder.forClient();
+        if (!certPath.isBlank() && !keyPath.isBlank()) {
+            File cert = new File(certPath);
+            File key  = new File(keyPath);
+            if (cert.exists() && key.exists()) {
+                builder.keyManager(cert, key);
+                log.info("Teller mTLS certificate loaded from {}", certPath);
+            } else {
+                log.warn("Teller cert/key not found at {} / {} — running without mTLS (sandbox only)", certPath, keyPath);
+            }
+        } else {
+            log.info("Teller cert path not configured — sandbox mode");
         }
 
-        log.info("Plaid client initialized: env={}", env);
-        return apiClient.createService(PlaidApi.class);
+        SslContext sslContext = builder.build();
+        HttpClient httpClient = HttpClient.create().secure(t -> t.sslContext(sslContext));
+        return WebClient.builder()
+                .baseUrl("https://api.teller.io")
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .build();
     }
 }
 
 @Data
-class LinkTokenRequest {
-    private String userId = "alphawealth-user-1";
-    private String clientName = "AlphaWealth";
-}
-
-@Data
-class TokenExchangeRequest {
-    private String publicToken;
+class EnrollRequest {
+    private String accessToken;
     private String institution;
 }
 
 @Slf4j
 @RestController
-@RequestMapping("/plaid")
+@RequestMapping("/banking")
 @RequiredArgsConstructor
 @CrossOrigin(origins = "*")
-class PlaidController {
+class BankingController {
 
-    private final PlaidApi plaidApi;
+    private final WebClient tellerClient;
     private final KafkaTemplate<String, String> kafka;
     private final ObjectMapper mapper;
 
-    // In-memory token store (use DB in production)
-    private final Map<String, String> accessTokens = new ConcurrentHashMap<>();
+    // accessToken → institution name
+    private final Map<String, String> enrollments = new ConcurrentHashMap<>();
 
-    @PostMapping("/link/token")
-    public Map<String, String> createLinkToken(@RequestBody(required = false) LinkTokenRequest req) throws Exception {
-        if (req == null) req = new LinkTokenRequest();
+    @Value("${teller.app-id:}")
+    private String appId;
 
-        LinkTokenCreateRequest request = new LinkTokenCreateRequest()
-                .user(new LinkTokenCreateRequestUser().clientUserId(req.getUserId()))
-                .clientName(req.getClientName())
-                .products(List.of(Products.TRANSACTIONS, Products.AUTH))
-                .countryCodes(List.of(CountryCode.US))
-                .language("en");
+    @Value("${teller.enrollments-path:/data/teller-enrollments.json}")
+    private String enrollmentsPath;
 
-        var response = plaidApi.linkTokenCreate(request).execute();
-        if (!response.isSuccessful() || response.body() == null) {
-            throw new RuntimeException("Plaid link token creation failed: " + response.errorBody());
+    @PostConstruct
+    void loadEnrollments() {
+        try {
+            Path path = Path.of(enrollmentsPath);
+            if (!Files.exists(path)) return;
+            Map<String, String> saved = mapper.readValue(path.toFile(), mapper.getTypeFactory()
+                    .constructMapType(HashMap.class, String.class, String.class));
+            enrollments.clear();
+            enrollments.putAll(saved);
+            log.info("Loaded {} Teller enrollments from {}", enrollments.size(), enrollmentsPath);
+        } catch (Exception e) {
+            log.warn("Failed to load Teller enrollments from {}: {}", enrollmentsPath, e.getMessage());
         }
-
-        return Map.of(
-                "link_token", response.body().getLinkToken(),
-                "expiration", response.body().getExpiration().toString()
-        );
     }
 
-    @PostMapping("/link/exchange")
-    public Map<String, Object> exchangeToken(@RequestBody TokenExchangeRequest req) throws Exception {
-        ItemPublicTokenExchangeRequest request = new ItemPublicTokenExchangeRequest()
-                .publicToken(req.getPublicToken());
+    @GetMapping("/config")
+    public Map<String, String> config() {
+        return Map.of("appId", appId);
+    }
 
-        var response = plaidApi.itemPublicTokenExchange(request).execute();
-        if (!response.isSuccessful() || response.body() == null) {
-            throw new RuntimeException("Token exchange failed");
+    @PostMapping("/enroll")
+    public Map<String, Object> enroll(@RequestBody EnrollRequest req) {
+        if (req.getAccessToken() == null || req.getAccessToken().isBlank()) {
+            return Map.of("status", "error", "message", "accessToken is required");
         }
-
-        String accessToken = response.body().getAccessToken();
-        String itemId = response.body().getItemId();
-        accessTokens.put(itemId, accessToken);
-
-        log.info("Exchanged Plaid token for institution {}: itemId={}", req.getInstitution(), itemId);
-        return Map.of("item_id", itemId, "status", "connected");
+        enrollments.put(req.getAccessToken(), req.getInstitution() != null ? req.getInstitution() : "Unknown");
+        persistEnrollments();
+        log.info("Enrolled institution: {} (total: {})", req.getInstitution(), enrollments.size());
+        return Map.of("status", "ok", "institution", req.getInstitution(), "enrolled", enrollments.size());
     }
 
     @GetMapping("/accounts")
-    public List<Map<String, Object>> getAccounts() throws Exception {
+    public List<Map<String, Object>> accounts() {
         List<Map<String, Object>> all = new ArrayList<>();
-        for (var entry : accessTokens.entrySet()) {
-            AccountsGetRequest req = new AccountsGetRequest().accessToken(entry.getValue());
-            var resp = plaidApi.accountsGet(req).execute();
-            if (resp.isSuccessful() && resp.body() != null) {
-                for (var acc : resp.body().getAccounts()) {
+        for (var entry : enrollments.entrySet()) {
+            try {
+                List<JsonNode> accs = tellerClient.get().uri("/accounts")
+                        .headers(h -> h.setBasicAuth(entry.getKey(), ""))
+                        .retrieve()
+                        .bodyToFlux(JsonNode.class)
+                        .collectList().block();
+
+                if (accs == null) continue;
+                for (JsonNode a : accs) {
+                    String accId = a.path("id").asText();
+                    BigDecimal balance = fetchBalance(entry.getKey(), accId);
                     all.add(Map.of(
-                            "id",        acc.getAccountId(),
-                            "name",      acc.getName(),
-                            "type",      acc.getType().toString(),
-                            "subtype",   acc.getSubtype() != null ? acc.getSubtype().toString() : "",
-                            "balance",   acc.getBalances().getCurrent() != null ? acc.getBalances().getCurrent() : 0,
-                            "available", acc.getBalances().getAvailable() != null ? acc.getBalances().getAvailable() : 0,
-                            "currency",  acc.getBalances().getIsoCurrencyCode()
+                            "id",        accId,
+                            "name",      a.path("name").asText(entry.getValue()),
+                            "type",      a.path("type").asText("depository"),
+                            "subtype",   a.path("subtype").asText("checking"),
+                            "balance",   balance,
+                            "available", balance,
+                            "currency",  a.path("currency").asText("USD"),
+                            "institution", a.path("institution").path("name").asText(entry.getValue())
                     ));
                 }
+            } catch (Exception e) {
+                log.error("Failed to fetch accounts for enrollment: {}", e.getMessage());
             }
         }
         return all;
     }
 
-    @GetMapping("/balances")
-    public List<Map<String, Object>> getBalances() throws Exception {
-        return getAccounts(); // same as accounts but emphasizing balance info
-    }
-
     @GetMapping("/transactions")
-    public List<Map<String, Object>> getTransactions(
-            @RequestParam(defaultValue = "30") int days) throws Exception {
-        LocalDate end = LocalDate.now();
-        LocalDate start = end.minusDays(days);
-
+    public List<Map<String, Object>> transactions(@RequestParam(defaultValue = "30") int days) {
         List<Map<String, Object>> all = new ArrayList<>();
-        for (var entry : accessTokens.entrySet()) {
-            TransactionsGetRequest req = new TransactionsGetRequest()
-                    .accessToken(entry.getValue())
-                    .startDate(start)
-                    .endDate(end);
-            var resp = plaidApi.transactionsGet(req).execute();
-            if (resp.isSuccessful() && resp.body() != null) {
-                for (var tx : resp.body().getTransactions()) {
-                    all.add(Map.of(
-                            "id",          tx.getTransactionId(),
-                            "merchant",    tx.getMerchantName() != null ? tx.getMerchantName() : tx.getName(),
-                            "amount",      BigDecimal.valueOf(tx.getAmount()).negate(),
-                            "category",    tx.getCategory() != null ? tx.getCategory().get(0) : "Other",
-                            "date",        tx.getDate().toString(),
-                            "currency",    tx.getIsoCurrencyCode() != null ? tx.getIsoCurrencyCode() : "USD",
-                            "pending",     tx.getPending()
-                    ));
+        LocalDate cutoff = LocalDate.now().minusDays(Math.max(0, days));
+        for (var entry : enrollments.entrySet()) {
+            try {
+                List<JsonNode> accs = tellerClient.get().uri("/accounts")
+                        .headers(h -> h.setBasicAuth(entry.getKey(), ""))
+                        .retrieve()
+                        .bodyToFlux(JsonNode.class)
+                        .collectList().block();
+
+                if (accs == null) continue;
+                for (JsonNode a : accs) {
+                    String accId = a.path("id").asText();
+                    try {
+                        List<JsonNode> txs = tellerClient.get()
+                                .uri("/accounts/{id}/transactions", accId)
+                                .headers(h -> h.setBasicAuth(entry.getKey(), ""))
+                                .retrieve()
+                                .bodyToFlux(JsonNode.class)
+                                .collectList().block();
+
+                        if (txs == null) continue;
+                        for (JsonNode t : txs) {
+                            String postedDate = t.path("date").asText();
+                            try {
+                                if (LocalDate.parse(postedDate).isBefore(cutoff)) continue;
+                            } catch (Exception ignored) {
+                                continue;
+                            }
+
+                            String amtStr = t.path("amount").asText("0");
+                            BigDecimal amt;
+                            try { amt = new BigDecimal(amtStr); } // Teller: negative = debit, positive = credit — use as-is
+                            catch (Exception ex) { amt = BigDecimal.ZERO; }
+
+                            String merchant = t.path("details").path("counterparty").path("name").asText(
+                                    t.path("description").asText("Unknown"));
+                            String category = normalizeCategory(merchant,
+                                    t.path("details").path("category").asText("other"),
+                                    t.path("type").asText(""));
+
+                            all.add(Map.of(
+                                    "id",       t.path("id").asText(),
+                                    "merchant", merchant,
+                                    "category", capitalize(category.replace("_", " ")),
+                                    "amount",   amt,
+                                    "date",     postedDate,
+                                    "currency", "USD",
+                                    "pending",  "pending".equals(t.path("status").asText())
+                            ));
+                        }
+                    } catch (Exception e) {
+                        log.debug("Failed to fetch transactions for account {}: {}", accId, e.getMessage());
+                    }
                 }
+            } catch (Exception e) {
+                log.error("Failed to fetch transactions for enrollment: {}", e.getMessage());
             }
         }
+        all.sort(Comparator.comparing(m -> String.valueOf(m.get("date")), Comparator.reverseOrder()));
         return all;
     }
 
     @PostMapping("/sync")
-    public Map<String, Object> forceSync() {
-        log.info("Force sync requested for {} institutions", accessTokens.size());
+    public Map<String, Object> sync() {
         try {
-            publishBalancesToKafka();
-            return Map.of("status", "ok", "institutions", accessTokens.size());
+            publishToKafka();
+            return Map.of("status", "ok", "enrollments", enrollments.size());
         } catch (Exception e) {
             return Map.of("status", "error", "message", e.getMessage());
         }
     }
 
-    @Scheduled(fixedRate = 600_000) // every 10 minutes
+    @GetMapping("/status")
+    public Map<String, Object> status() {
+        return Map.of("enrolled", enrollments.size(), "institutions", new ArrayList<>(enrollments.values()));
+    }
+
+    @Scheduled(fixedRate = 600_000)
     public void scheduledSync() {
-        if (accessTokens.isEmpty()) return;
-        log.info("Scheduled Plaid sync");
+        if (enrollments.isEmpty()) return;
+        log.info("Scheduled Teller sync for {} enrollments", enrollments.size());
+        try { publishToKafka(); } catch (Exception e) { log.error("Sync failed", e); }
+    }
+
+    private BigDecimal fetchBalance(String accessToken, String accountId) {
         try {
-            publishBalancesToKafka();
+            JsonNode b = tellerClient.get()
+                    .uri("/accounts/{id}/balances", accountId)
+                    .headers(h -> h.setBasicAuth(accessToken, ""))
+                    .retrieve()
+                    .bodyToMono(JsonNode.class).block();
+            if (b == null) return BigDecimal.ZERO;
+            String ledger = b.path("ledger").asText(b.path("available").asText("0"));
+            return new BigDecimal(ledger);
         } catch (Exception e) {
-            log.error("Scheduled sync failed", e);
+            return BigDecimal.ZERO;
         }
     }
 
-    private void publishBalancesToKafka() throws Exception {
-        for (var account : getAccounts()) {
-            String json = mapper.writeValueAsString(account);
-            kafka.send("plaid.balances", (String) account.get("id"), json);
+    private void persistEnrollments() {
+        try {
+            Path path = Path.of(enrollmentsPath);
+            if (path.getParent() != null) {
+                Files.createDirectories(path.getParent());
+            }
+            mapper.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), enrollments);
+        } catch (Exception e) {
+            log.warn("Failed to persist Teller enrollments to {}: {}", enrollmentsPath, e.getMessage());
         }
+    }
+
+    private void publishToKafka() throws Exception {
+        for (var acc : accounts()) {
+            kafka.send("teller.balances", (String) acc.get("id"), mapper.writeValueAsString(acc));
+        }
+    }
+
+    private String normalizeCategory(String merchant, String tellerCategory, String type) {
+        String m = merchant.toLowerCase();
+        // Merchant-based overrides take precedence
+        if (m.contains("interest payment")) return "Income";
+        if (m.contains("online transfer") || m.contains("internal transfer") || m.contains("zelle payment")
+                || m.contains("venmo") || m.contains("paypal") || m.contains("cash app") || m.contains("cashapp")) {
+            return "Transfer";
+        }
+        if (m.contains("uber eats") || m.contains("doordash") || m.contains("grubhub")
+                || m.contains("postmates") || m.contains("seamless") || m.contains("caviar")) {
+            return "Food & Dining";
+        }
+        if (m.contains("uber")) return "Food & Dining"; // user: uber = food
+        if (m.contains("lyft"))  return "Transportation";
+        // Map Teller categories to display names
+        return switch (tellerCategory.toLowerCase()) {
+            case "food_and_drink", "dining_out", "restaurants" -> "Food & Dining";
+            case "groceries"          -> "Groceries";
+            case "transportation"     -> "Transportation";
+            case "gas_stations", "gas" -> "Gas";
+            case "shopping", "retail" -> "Shopping";
+            case "entertainment"      -> "Entertainment";
+            case "health"             -> "Health";
+            case "utilities"          -> "Utilities";
+            case "rent", "housing"    -> "Housing";
+            case "transfer", "transfers", "account_transfer" -> "Transfer";
+            case "income", "payroll"  -> "Income";
+            default -> capitalize(tellerCategory.replace("_", " "));
+        };
+    }
+
+    private String capitalize(String s) {
+        if (s == null || s.isEmpty()) return s;
+        return Character.toUpperCase(s.charAt(0)) + s.substring(1).toLowerCase();
+    }
+}
+
+@RestController
+@CrossOrigin(origins = "*")
+@RequiredArgsConstructor
+class BankingHealthController {
+
+    private final BankingController bankingController;
+
+    @GetMapping("/health")
+    public Map<String, Object> health() {
+        return Map.of(
+                "status", "healthy",
+                "service", "plaid-banking-svc",
+                "enrolled", bankingController.status().get("enrolled")
+        );
     }
 }

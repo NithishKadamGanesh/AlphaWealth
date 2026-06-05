@@ -17,10 +17,10 @@ spring:
 server:
   port: 8092
 
-plaid:
-  client-id: ${PLAID_CLIENT_ID:}
-  secret:    ${PLAID_SECRET:}
-  env:       ${PLAID_ENV:sandbox}     # sandbox / development / production
+teller:
+  app-id:    ${TELLER_APP_ID:}
+  cert-path: ${TELLER_CERT_PATH:/certs/certificate.pem}
+  key-path:  ${TELLER_KEY_PATH:/certs/private_key.pem}
 
 management:
   endpoints:

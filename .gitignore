@@ -21,3 +21,14 @@ logs/
 .coverage
 coverage/
 out/
+
+# IBKR Client Portal Gateway binary distribution
+clientportal/
+
+# secrets / credentials
+secrets/
+teller.zip
+*.pem
+*.key
+*.p12
+*.keystore

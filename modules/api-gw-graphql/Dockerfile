@@ -1,9 +1,7 @@
 FROM maven:3.9-eclipse-temurin-21 AS builder
 WORKDIR /build
 COPY pom.xml .
-COPY modules/common modules/common
-COPY modules/api-gw-graphql modules/api-gw-graphql
-RUN mvn -pl modules/common -am install -DskipTests -q
+COPY modules modules
 RUN mvn -pl modules/api-gw-graphql -am package -DskipTests -q
 
 FROM eclipse-temurin:21-jre-alpine

@@ -1,5 +1,6 @@
 package com.alphatrade.ibkr.api;
 
+import com.alphatrade.ibkr.config.IbkrConfig;
 import com.alphatrade.ibkr.model.AccountSummary;
 import com.alphatrade.ibkr.model.IbkrPosition;
 import com.alphatrade.ibkr.service.IbkrConnectionService;
@@ -8,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Map;
 
 @RestController
@@ -17,6 +19,26 @@ import java.util.Map;
 public class IbkrController {
 
     private final IbkrConnectionService ibkr;
+    private final IbkrConfig config;
+
+    @GetMapping("/status")
+    public IbkrStatusResponse getStatus() {
+        ibkr.refreshStatusIfStale();
+        return new IbkrStatusResponse(
+                ibkr.getState().name(),
+                ibkr.isConnected(),
+                ibkr.isGatewayReachable(),
+                ibkr.hasSnapshot(),
+                ibkr.isSyncInProgress(),
+                ibkr.getPrimaryAccountId(),
+                ibkr.getPositions().size(),
+                ibkr.getAccountSummaries().size(),
+                ibkr.getLastSyncAt(),
+                ibkr.getLastStatusCheckAt(),
+                ibkr.getLastError(),
+                config.getPublicLoginUrl()
+        );
+    }
 
     @GetMapping("/positions")
     public Collection<IbkrPosition> getPositions() {
@@ -34,22 +56,15 @@ public class IbkrController {
         return ibkr.getAccountSummaries().values();
     }
 
-    @GetMapping("/status")
-    public Map<String, Object> getStatus() {
-        return Map.of(
-                "connected", ibkr.isConnected(),
-                "positionCount", ibkr.getPositions().size(),
-                "accountCount", ibkr.getAccountSummaries().size()
-        );
+    @PostMapping("/sync")
+    public IbkrStatusResponse forceSync() {
+        ibkr.syncNow();
+        return getStatus();
     }
 
-    @PostMapping("/sync")
-    public Map<String, Object> forceSync() {
-        if (!ibkr.isConnected()) {
-            return Map.of("status", "error", "message", "Not connected to TWS");
-        }
-        ibkr.requestPositions();
-        ibkr.requestAccountSummary();
-        return Map.of("status", "ok", "message", "Sync requested");
+    @PostMapping("/disconnect")
+    public IbkrStatusResponse disconnect() {
+        ibkr.disconnect();
+        return getStatus();
     }
 }

@@ -243,3 +243,16 @@ class AlertsController {
         }
     }
 }
+
+@RestController
+@CrossOrigin(origins = "*")
+class AlertsHealthController {
+
+    @GetMapping("/health")
+    public Map<String, Object> health() {
+        return Map.of(
+                "status", "healthy",
+                "service", "alerts-svc"
+        );
+    }
+}

@@ -85,7 +85,7 @@ Add to `.env`:
 
 | Feature              | Variable(s)                                  | Cost         |
 |----------------------|----------------------------------------------|--------------|
-| Real IBKR holdings   | `IBKR_PORT=7497` + run TWS Gateway           | Free with IB |
+| Real IBKR holdings   | `IBKR_CP_GATEWAY_URL` + run Client Portal gateway | Free with IB |
 | Real Chase via Plaid | `PLAID_CLIENT_ID`, `PLAID_SECRET`            | Free dev tier|
 | Claude advisor       | `ANTHROPIC_API_KEY=sk-ant-...`               | Paid usage   |
 | GPT-4 advisor        | `OPENAI_API_KEY=sk-...`                      | Paid usage   |

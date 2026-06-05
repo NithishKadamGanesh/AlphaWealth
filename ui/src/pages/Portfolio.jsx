@@ -3,6 +3,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip
 } from "recharts";
+import { Briefcase } from "lucide-react";
 import { T } from "../lib/tokens";
 import { Icon } from "../components/Icon";
 import { Card } from "../components/ui/Card";
@@ -10,19 +11,32 @@ import { Tag, Pulse } from "../components/ui/Tag";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Sparkline } from "../components/ui/Sparkline";
 import { SkeletonCard } from "../components/ui/Skeleton";
+import { EmptyState } from "../components/ui/EmptyState";
 import { cn, fmtMoney, fmtPct } from "../lib/cn";
 import { useIbkrPositions } from "../hooks/useIbkrPositions";
 
 const ANALYSIS_URL = import.meta.env.VITE_ANALYSIS_URL || "http://localhost:8088";
 
+const formatLastSync = (ts) => {
+  if (!ts) return "never";
+  return new Date(ts).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
 export const Portfolio = () => {
-  const { positions, accounts, status, isReal, loading } = useIbkrPositions();
+  const { positions, summary, status, dataMode, isReal, loading, lastError, refresh } = useIbkrPositions();
   const [optimization, setOptimization] = useState(null);
   const [optimizing, setOptimizing] = useState(false);
 
-  const totalValue = positions.reduce((s, h) => s + h.shares * h.price, 0);
+  const investedValue = positions.reduce((s, h) => s + (h.marketValue || h.shares * h.price), 0);
   const totalCost = positions.reduce((s, h) => s + h.shares * h.cost, 0);
-  const totalGain = totalValue - totalCost;
+  const totalValue = summary?.netLiquidation ?? investedValue;
+  const totalCash = summary?.totalCash ?? 0;
+  const totalGain = investedValue - totalCost;
   const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
 
   useEffect(() => {
@@ -69,31 +83,113 @@ export const Portfolio = () => {
       holdings: positions.filter(p => (p.sector || "Other") === name).map(p => p.ticker) }))
     .sort((a, b) => b.weight - a.weight);
 
+  const connectionBadge = (() => {
+    if (loading) return <Tag variant="warning" dot>Loading</Tag>;
+    if (dataMode === "live") {
+      return <Tag variant="positive" dot>IBKR LIVE — {status?.positionCount || 0} pos</Tag>;
+    }
+    if (dataMode === "stale") {
+      return <Tag variant="warning">Snapshot — {formatLastSync(status?.lastSyncAt)}</Tag>;
+    }
+    if (dataMode === "disconnected") {
+      return <Tag variant="default">Login required</Tag>;
+    }
+    return <Tag variant="negative">Service offline</Tag>;
+  })();
+
+  const holdingsSourceLabel = dataMode === "live"
+    ? "IBKR Live"
+    : dataMode === "stale"
+      ? "Last-known snapshot"
+      : dataMode === "disconnected"
+        ? "No broker data"
+        : "Service offline";
+
+  const emptyState = (() => {
+    if (dataMode === "live") {
+      return {
+        title: "No live positions",
+        description: "IBKR is connected, but there are no holdings in the synced account right now.",
+      };
+    }
+    if (dataMode === "stale") {
+      return {
+        title: "No cached positions available",
+        description: "The broker link exists, but this workspace doesn't have a usable IBKR snapshot yet.",
+      };
+    }
+    if (dataMode === "disconnected") {
+      return {
+        title: "Connect IBKR to load holdings",
+        description: "Open Settings → Broker Connections, sign in through the Client Portal gateway, then run a sync.",
+      };
+    }
+    return {
+      title: "ibkr-sync-svc is offline",
+      description: "The portfolio service couldn't reach the IBKR sync backend. Bring the service back up, then refresh.",
+    };
+  })();
+
   return (
     <div className="space-y-6 max-w-[1400px]">
       <PageHeader
         title="Portfolio Analyzer"
-        subtitle="Live IBKR positions — Correlation matrix — Risk-parity sizing"
+        subtitle="Backend-owned IBKR snapshots — Correlation matrix — Risk-parity sizing"
         badge={
           <>
-            {loading && <Tag variant="warning" dot>Loading</Tag>}
-            {!loading && isReal && <Tag variant="positive" dot>IBKR LIVE — {status?.positionCount || 0} pos</Tag>}
-            {!loading && !isReal && <Tag variant="warning">Fallback — Start TWS</Tag>}
+            {connectionBadge}
             <Tag variant="accent">ANALYSIS-SVC</Tag>
           </>
         }
       />
 
+      {(dataMode === "stale" || dataMode === "disconnected" || dataMode === "error") && (
+        <Card className={cn(
+          dataMode === "stale" && "bg-warning/5 border-warning/20",
+          dataMode === "disconnected" && "bg-canvas",
+          dataMode === "error" && "bg-negative/5 border-negative/20",
+        )}>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-1">
+                IBKR Connection
+              </div>
+              <div className="text-sm text-muted">
+                {dataMode === "stale" && `Showing your last-known broker snapshot from ${formatLastSync(status?.lastSyncAt)}.`}
+                {dataMode === "disconnected" && "No authenticated IBKR session is available yet. Connect the gateway from Settings, then sync once."}
+                {dataMode === "error" && "ibkr-sync-svc is unavailable, so broker holdings can't be refreshed right now."}
+              </div>
+              {lastError && (
+                <div className="text-2xs text-subtle font-mono mt-2">{lastError}</div>
+              )}
+            </div>
+            <button
+              onClick={refresh}
+              className="text-xs text-muted hover:text-ink transition-colors font-mono"
+            >
+              Refresh status
+            </button>
+          </div>
+        </Card>
+      )}
+
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in">
         <Card>
-          <div className="text-2xs uppercase tracking-wider text-subtle font-medium font-mono">Portfolio Value</div>
+          <div className="text-2xs uppercase tracking-wider text-subtle font-medium font-mono">
+            {summary ? "Net Liquidation" : "Portfolio Value"}
+          </div>
           <div className="font-display text-2xl sm:text-3xl font-bold tracking-tighter mt-2">{fmtMoney(totalValue)}</div>
           <div className="mt-1">
             <Tag variant={totalGainPct >= 0 ? "positive" : "negative"}>
               {totalGainPct >= 0 ? "+" : ""}{totalGainPct.toFixed(1)}%
             </Tag>
           </div>
+          {summary && (
+            <div className="mt-2 text-2xs text-subtle font-mono">
+              {fmtMoney(investedValue)} invested + {fmtMoney(totalCash)} cash
+            </div>
+          )}
           <div className="mt-3 h-8"><Sparkline data={[100,102,105,108,107,110,112]} height={30} /></div>
         </Card>
 
@@ -250,68 +346,76 @@ export const Portfolio = () => {
       {/* Holdings table */}
       <Card padded={false} className="animate-slide-up" style={{ animationDelay: "300ms" }}>
         <div className="px-6 py-4 border-b border-line flex justify-between items-center">
-          <span className="font-display text-base font-bold">Holdings — {isReal ? "IBKR Live" : "Demo"}</span>
+          <span className="font-display text-base font-bold">Holdings — {holdingsSourceLabel}</span>
           <Tag variant="default">{positions.length} positions</Tag>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="bg-canvas">
-                {["Symbol", "Shares", "Price", "Value", "Cost", "P&L", "Day", "Weight"].map(h => (
-                  <th key={h} className="px-6 py-3 text-left text-2xs font-bold text-muted uppercase tracking-wider font-mono">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map(h => {
-                const value = h.shares * h.price;
-                const cost = h.shares * h.cost;
-                const pnl = value - cost;
-                const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
-                return (
-                  <tr key={h.ticker} className="border-b border-line hover:bg-canvas/50 transition-colors">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-ink text-positive flex items-center justify-center font-mono text-2xs font-extrabold">
-                          {h.ticker.slice(0, 2)}
+        {positions.length === 0 ? (
+          <EmptyState
+            icon={Briefcase}
+            title={emptyState.title}
+            description={emptyState.description}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-canvas">
+                  {["Symbol", "Shares", "Price", "Value", "Cost", "P&L", "Day", "Weight"].map(h => (
+                    <th key={h} className="px-6 py-3 text-left text-2xs font-bold text-muted uppercase tracking-wider font-mono">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {positions.map(h => {
+                  const value = h.shares * h.price;
+                  const cost = h.shares * h.cost;
+                  const pnl = value - cost;
+                  const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
+                  return (
+                    <tr key={h.ticker} className="border-b border-line hover:bg-canvas/50 transition-colors">
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-ink text-positive flex items-center justify-center font-mono text-2xs font-extrabold">
+                            {h.ticker.slice(0, 2)}
+                          </div>
+                          <div>
+                            <div className="font-mono text-sm font-bold">{h.ticker}</div>
+                            <div className="text-xs text-muted">{h.name || h.ticker}</div>
+                          </div>
                         </div>
-                        <div>
-                          <div className="font-mono text-sm font-bold">{h.ticker}</div>
-                          <div className="text-xs text-muted">{h.name || h.ticker}</div>
+                      </td>
+                      <td className="px-6 py-4 font-mono text-sm">{h.shares}</td>
+                      <td className="px-6 py-4 font-mono text-sm font-semibold">${h.price.toFixed(2)}</td>
+                      <td className="px-6 py-4 font-mono text-sm font-semibold">{fmtMoney(value)}</td>
+                      <td className="px-6 py-4 font-mono text-sm text-muted">{fmtMoney(cost)}</td>
+                      <td className="px-6 py-4">
+                        <div className={cn("font-mono text-sm font-bold", pnl >= 0 ? "text-positive" : "text-negative")}>
+                          {pnl >= 0 ? "+" : ""}{fmtMoney(Math.abs(pnl))}
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 font-mono text-sm">{h.shares}</td>
-                    <td className="px-6 py-4 font-mono text-sm font-semibold">${h.price.toFixed(2)}</td>
-                    <td className="px-6 py-4 font-mono text-sm font-semibold">{fmtMoney(value)}</td>
-                    <td className="px-6 py-4 font-mono text-sm text-muted">{fmtMoney(cost)}</td>
-                    <td className="px-6 py-4">
-                      <div className={cn("font-mono text-sm font-bold", pnl >= 0 ? "text-positive" : "text-negative")}>
-                        {pnl >= 0 ? "+" : ""}{fmtMoney(Math.abs(pnl))}
-                      </div>
-                      <div className={cn("font-mono text-2xs", pnl >= 0 ? "text-positive" : "text-negative")}>
-                        {fmtPct(pnlPct)}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={cn("font-mono text-xs font-bold", (h.change ?? 0) >= 0 ? "text-positive" : "text-negative")}>
-                        {(h.change ?? 0) >= 0 ? "+" : ""}{(h.change ?? 0).toFixed(2)}%
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-14 h-1.5 bg-canvas rounded-full">
-                          <div className="h-full bg-ink rounded-full" style={{ width: `${Math.min(h.weight * 2, 100)}%` }} />
+                        <div className={cn("font-mono text-2xs", pnl >= 0 ? "text-positive" : "text-negative")}>
+                          {fmtPct(pnlPct)}
                         </div>
-                        <span className="font-mono text-xs text-muted">{h.weight}%</span>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={cn("font-mono text-xs font-bold", (h.change ?? 0) >= 0 ? "text-positive" : "text-negative")}>
+                          {(h.change ?? 0) >= 0 ? "+" : ""}{(h.change ?? 0).toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-14 h-1.5 bg-canvas rounded-full">
+                            <div className="h-full bg-ink rounded-full" style={{ width: `${Math.min(h.weight * 2, 100)}%` }} />
+                          </div>
+                          <span className="font-mono text-xs text-muted">{h.weight}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
     </div>
   );

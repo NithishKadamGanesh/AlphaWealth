@@ -32,11 +32,9 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- Plaid Java client - https://github.com/plaid/plaid-java -->
         <dependency>
-            <groupId>com.plaid</groupId>
-            <artifactId>plaid-java</artifactId>
-            <version>27.0.0</version>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>

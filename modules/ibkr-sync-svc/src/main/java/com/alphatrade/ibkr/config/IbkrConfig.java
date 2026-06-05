@@ -8,10 +8,9 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @ConfigurationProperties(prefix = "ibkr")
 public class IbkrConfig {
-    private String host = "host.docker.internal";
-    private int port = 7497;       // 7497 = paper, 7496 = live
-    private int clientId = 100;
-    private String account;
-    private boolean readonly = true;  // ALWAYS true
+    private String cpGatewayUrl = "https://host.docker.internal:5001";
+    private String publicLoginUrl = "https://localhost:5001";
     private int syncIntervalSeconds = 30;
+    private int requestTimeoutSeconds = 10;
+    private int statusRefreshSeconds = 8;
 }

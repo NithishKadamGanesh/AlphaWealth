@@ -11,36 +11,47 @@ import { Sparkline } from "../components/ui/Sparkline";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { cn, fmtMoney } from "../lib/cn";
 import { useBanking } from "../hooks/useBanking";
+import { buildDailySpend, summarizeCashFlow } from "../lib/banking";
+
+const loadTellerScript = () => new Promise((resolve) => {
+  if (window.TellerConnect) { resolve(); return; }
+  const s = document.createElement("script");
+  s.src = "https://cdn.teller.io/connect/connect.js";
+  s.onload = resolve;
+  document.body.appendChild(s);
+});
 
 export const Banking = () => {
-  const { accounts, transactions, categories, isReal, loading } = useBanking();
+  const { accounts, transactions, categories, isReal, loading, appId, enroll } = useBanking();
 
-  const totalIncome = transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const totalSpend  = transactions.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-  const savings = totalIncome - totalSpend;
+  const connectBank = async () => {
+    await loadTellerScript();
+    const tc = window.TellerConnect.setup({
+      applicationId: appId,
+      onSuccess: (enrollment) => enroll(enrollment.accessToken, enrollment.institution?.name),
+      onExit: () => {},
+    });
+    tc.open();
+  };
+
+  const { income, spending, netCashFlow, saveRate, incomeTransactions, spendingTransactions } = summarizeCashFlow(transactions);
   const totalBalance = accounts.reduce((s, a) => s + (Number(a.balance) || 0), 0);
-
-  const dailySpend = transactions.length > 0
-    ? (() => {
-        const byDay = {};
-        transactions.filter(t => t.amount < 0).forEach(t => {
-          const day = new Date(t.date).getDate() || 1;
-          byDay[day] = (byDay[day] || 0) + Math.abs(t.amount);
-        });
-        return Array.from({ length: 30 }, (_, i) => ({ day: i + 1, amount: byDay[i + 1] || 0 }));
-      })()
-    : [];
+  const dailySpend = buildDailySpend(transactions);
 
   return (
     <div className="space-y-6 max-w-[1400px]">
       <PageHeader
         title="Banking & Spending"
-        subtitle="Chase accounts via Plaid — auto-categorized"
+        subtitle="Real bank accounts via Teller — auto-categorized"
         badge={
           <>
             {loading && <Tag variant="warning" dot>Loading</Tag>}
-            {!loading && isReal && <Tag variant="accent" dot>LIVE — Plaid</Tag>}
-            {!loading && !isReal && <Tag variant="warning">Sandbox</Tag>}
+            {!loading && isReal && <Tag variant="accent" dot>LIVE — Teller</Tag>}
+            {!loading && !isReal && (
+              appId
+                ? <button onClick={connectBank} className="text-xs font-mono px-3 py-1 rounded-full bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors">+ Connect Bank</button>
+                : <Tag variant="warning">Demo Data</Tag>
+            )}
           </>
         }
       />
@@ -48,30 +59,30 @@ export const Banking = () => {
       {/* Hero stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 animate-fade-in">
         <Card className="bg-positive/10 border-positive/20">
-          <div className="text-xs uppercase tracking-wider text-positive font-medium font-mono">Income — This Month</div>
-          <div className="font-display text-3xl font-bold tracking-tighter mt-2 text-ink">{fmtMoney(totalIncome)}</div>
+          <div className="text-xs uppercase tracking-wider text-positive font-medium font-mono">Money In — 30D</div>
+          <div className="font-display text-3xl font-bold tracking-tighter mt-2 text-ink">{fmtMoney(income)}</div>
           <div className="text-xs font-mono text-positive/70 mt-1">
-            {transactions.filter(t => t.amount > 0).length} deposits
+            {incomeTransactions.length} posted credits
           </div>
           <div className="mt-4 h-9"><Sparkline data={[100,102,105,108,110,114,118]} height={36} /></div>
         </Card>
 
         <Card className="bg-negative/5 border-negative/20">
-          <div className="text-xs uppercase tracking-wider text-negative font-medium font-mono">Spending — This Month</div>
-          <div className="font-display text-3xl font-bold tracking-tighter mt-2 text-negative">{fmtMoney(totalSpend)}</div>
+          <div className="text-xs uppercase tracking-wider text-negative font-medium font-mono">Spending — 30D</div>
+          <div className="font-display text-3xl font-bold tracking-tighter mt-2 text-negative">{fmtMoney(spending)}</div>
           <div className="text-xs font-mono text-negative/70 mt-1">
-            {transactions.filter(t => t.amount < 0).length} transactions
+            {spendingTransactions.length} posted debits
           </div>
           <div className="mt-4 h-9"><Sparkline data={[120,118,115,112,110,108,104]} height={36} /></div>
         </Card>
 
         <Card className="bg-ink text-white border-ink">
           <div className="text-xs uppercase tracking-wider text-zinc-500 font-medium font-mono">Net Cash Flow</div>
-          <div className={cn("font-display text-3xl font-bold tracking-tighter mt-2", savings >= 0 ? "text-positive" : "text-negative")}>
-            {savings >= 0 ? "+" : "-"}{fmtMoney(Math.abs(savings))}
+          <div className={cn("font-display text-3xl font-bold tracking-tighter mt-2", netCashFlow >= 0 ? "text-positive" : "text-negative")}>
+            {netCashFlow >= 0 ? "+" : "-"}{fmtMoney(Math.abs(netCashFlow))}
           </div>
           <div className="text-xs font-mono text-zinc-500 mt-1">
-            Save rate {totalIncome > 0 ? ((savings / totalIncome) * 100).toFixed(0) : 0}%
+            Excludes pending + transfer-like activity • save rate {saveRate.toFixed(0)}%
           </div>
           <div className="mt-4 h-9"><Sparkline data={[98,100,103,105,107,109,112]} height={36} /></div>
         </Card>

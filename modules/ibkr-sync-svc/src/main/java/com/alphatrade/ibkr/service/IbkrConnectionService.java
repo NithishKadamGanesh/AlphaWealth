@@ -2,259 +2,373 @@ package com.alphatrade.ibkr.service;
 
 import com.alphatrade.ibkr.config.IbkrConfig;
 import com.alphatrade.ibkr.model.AccountSummary;
+import com.alphatrade.ibkr.model.ConnectionState;
 import com.alphatrade.ibkr.model.IbkrPosition;
-import com.ib.client.*;
+import com.alphatrade.ibkr.model.Snapshot;
+import com.fasterxml.jackson.databind.JsonNode;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.netty.http.client.HttpClient;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * Manages the TWS / IB Gateway connection.
- * Implements EWrapper to receive callbacks from IBKR.
- *
- * From inside Docker, use host.docker.internal:7497 (paper) or :7496 (live).
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class IbkrConnectionService implements EWrapper {
+public class IbkrConnectionService {
 
     private final IbkrConfig config;
     private final PositionPublisher positionPublisher;
+    private final SnapshotStore snapshotStore;
 
-    private EClientSocket client;
-    private EJavaSignal signal;
-    private EReader reader;
-
-    private final AtomicBoolean connected = new AtomicBoolean(false);
+    private WebClient client;
+    private final AtomicReference<ConnectionState> state = new AtomicReference<>(ConnectionState.DISCONNECTED);
     private final Map<String, IbkrPosition> positions = new ConcurrentHashMap<>();
     private final Map<String, AccountSummary> accountSummaries = new ConcurrentHashMap<>();
+    private final Object syncMonitor = new Object();
+    private volatile String primaryAccountId = null;
+    private volatile Instant lastSyncAt = null;
+    private volatile Instant lastStatusCheckAt = null;
+    private volatile String lastError = null;
+    private volatile boolean gatewayReachable = false;
+    private volatile boolean syncInProgress = false;
 
     @PostConstruct
     public void init() {
-        log.info("Initializing IBKR connection: host={} port={} clientId={} readonly={}",
-                config.getHost(), config.getPort(), config.getClientId(), config.isReadonly());
-
-        if (!config.isReadonly()) {
-            log.error("FATAL: IBKR service must run in READONLY mode. Set ibkr.readonly=true");
-            throw new IllegalStateException("ibkr.readonly must be true");
-        }
-
-        signal = new EJavaSignal();
-        client = new EClientSocket(this, signal);
-        connectToTws();
+        log.info("IBKR Client Portal mode — gateway: {}", config.getCpGatewayUrl());
+        buildClient();
+        restoreSnapshot();
     }
 
-    private void connectToTws() {
+    private void buildClient() {
         try {
-            client.eConnect(config.getHost(), config.getPort(), config.getClientId());
-            Thread.sleep(1000);
-
-            if (client.isConnected()) {
-                log.info("✓ Connected to TWS at {}:{}", config.getHost(), config.getPort());
-                reader = new EReader(client, signal);
-                reader.start();
-
-                new Thread(() -> {
-                    while (client.isConnected()) {
-                        signal.waitForSignal();
-                        try {
-                            reader.processMsgs();
-                        } catch (Exception e) {
-                            log.error("Error processing TWS msg", e);
-                        }
-                    }
-                }, "ibkr-reader").start();
-
-                connected.set(true);
-            } else {
-                log.warn("✗ TWS connection failed — make sure IB Gateway/TWS is running with API enabled.");
-            }
+            SslContext sslContext = SslContextBuilder.forClient()
+                    .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                    .build();
+            HttpClient httpClient = HttpClient.create()
+                    .followRedirect(true)
+                    .responseTimeout(Duration.ofSeconds(config.getRequestTimeoutSeconds()))
+                    .secure(t -> t.sslContext(sslContext));
+            client = WebClient.builder()
+                    .baseUrl(config.getCpGatewayUrl())
+                    .clientConnector(new ReactorClientHttpConnector(httpClient))
+                    .build();
         } catch (Exception e) {
-            log.error("Failed to connect to TWS", e);
+            log.error("Failed to create WebClient", e);
         }
     }
 
-    @PreDestroy
-    public void shutdown() {
-        if (client != null && client.isConnected()) {
-            client.eDisconnect();
-            log.info("Disconnected from TWS");
+    private void restoreSnapshot() {
+        Snapshot snap = snapshotStore.load();
+        if (snap == null) return;
+        primaryAccountId = snap.getPrimaryAccountId();
+        lastSyncAt = snap.getLastSyncAt();
+        if (snap.getPositions() != null) {
+            for (IbkrPosition p : snap.getPositions()) positions.put(p.getSymbol(), p);
+        }
+        if (snap.getAccountSummaries() != null) accountSummaries.putAll(snap.getAccountSummaries());
+        log.info("Restored snapshot: {} positions, lastSyncAt={}", positions.size(), lastSyncAt);
+    }
+
+    private void persistSnapshot() {
+        Snapshot snap = Snapshot.builder()
+                .primaryAccountId(primaryAccountId)
+                .lastSyncAt(lastSyncAt)
+                .positions(new ArrayList<>(positions.values()))
+                .accountSummaries(new java.util.HashMap<>(accountSummaries))
+                .build();
+        snapshotStore.save(snap);
+    }
+
+    // Called by scheduler every 60s to keep the CP session alive
+    public void tickle() {
+        synchronized (syncMonitor) {
+            if (client == null || !gatewayReachable || syncInProgress) return;
+            try {
+                postJson("/v1/api/tickle");
+                log.debug("Tickle ok");
+            } catch (Exception e) {
+                log.debug("Tickle failed: {}", rootCauseMessage(e));
+            }
         }
     }
 
-    public void requestPositions() {
-        if (!connected.get()) {
-            log.warn("Cannot request positions — not connected to TWS");
-            return;
+    public void checkAuthAndSync() {
+        syncNow();
+    }
+
+    public void refreshStatusIfStale() {
+        Instant checkedAt = lastStatusCheckAt;
+        if (syncInProgress) return;
+        if (checkedAt == null || Duration.between(checkedAt, Instant.now()).getSeconds() >= Math.max(3, config.getStatusRefreshSeconds())) {
+            refreshConnectionState();
         }
-        client.reqPositions();
     }
 
-    public void requestAccountSummary() {
-        if (!connected.get()) return;
-        String tags = "NetLiquidation,TotalCashValue,BuyingPower,GrossPositionValue," +
-                      "InitMarginReq,MaintMarginReq,AvailableFunds,ExcessLiquidity";
-        client.reqAccountSummary(9001, "All", tags);
+    public void refreshConnectionState() {
+        synchronized (syncMonitor) {
+            if (client == null || syncInProgress) return;
+            lastStatusCheckAt = Instant.now();
+            try {
+                SessionProbe session = probeSession();
+                if (session.authorized()) {
+                    gatewayReachable = true;
+                    lastError = null;
+                    state.set(ConnectionState.CONNECTED);
+                    if (session.primaryAccountId() != null) {
+                        primaryAccountId = session.primaryAccountId();
+                    }
+                } else {
+                    gatewayReachable = true;
+                    state.set(ConnectionState.AUTH_REQUIRED);
+                    lastError = "Login required in IBKR Client Portal gateway";
+                }
+            } catch (WebClientResponseException e) {
+                handleGatewayResponseError(e, false);
+            } catch (Exception e) {
+                transitionToGatewayFailure("Gateway unreachable: " + rootCauseMessage(e));
+            }
+        }
     }
 
-    public boolean isConnected() { return connected.get(); }
+    public void syncNow() {
+        synchronized (syncMonitor) {
+            if (client == null || syncInProgress) return;
+            syncInProgress = true;
+            state.set(ConnectionState.SYNCING);
+            lastStatusCheckAt = Instant.now();
+            try {
+                SessionProbe session = probeSession();
+                if (!session.authorized()) {
+                    gatewayReachable = true;
+                    state.set(ConnectionState.AUTH_REQUIRED);
+                    lastError = "Login required in IBKR Client Portal gateway";
+                    return;
+                }
+
+                String accountId = session.primaryAccountId();
+                if (accountId == null || accountId.isBlank()) {
+                    accountId = fetchPrimaryAccountId();
+                }
+                if (accountId == null || accountId.isBlank()) {
+                    gatewayReachable = true;
+                    state.set(ConnectionState.LAST_SYNC_FAILED);
+                    lastError = "No accounts returned from IBKR";
+                    return;
+                }
+
+                List<IbkrPosition> latestPositions = fetchPositionsForAccount(accountId);
+                AccountSummary summary = fetchAccountSummaryForAccount(accountId);
+
+                positions.clear();
+                for (IbkrPosition position : latestPositions) {
+                    positions.put(position.getSymbol(), position);
+                    positionPublisher.publishPosition(position);
+                }
+
+                accountSummaries.clear();
+                if (summary != null) {
+                    accountSummaries.put(accountId, summary);
+                    positionPublisher.publishAccountSummary(summary);
+                }
+
+                primaryAccountId = accountId;
+                lastSyncAt = Instant.now();
+                gatewayReachable = true;
+                lastError = null;
+                state.set(ConnectionState.CONNECTED);
+                persistSnapshot();
+                log.info("Synced {} positions from IBKR (account={})", positions.size(), accountId);
+            } catch (WebClientResponseException e) {
+                handleGatewayResponseError(e, true);
+            } catch (Exception e) {
+                transitionToGatewayFailure("Gateway unreachable: " + rootCauseMessage(e));
+            } finally {
+                syncInProgress = false;
+                lastStatusCheckAt = Instant.now();
+            }
+        }
+    }
+
+    private BigDecimal decimal(JsonNode root, String key) {
+        try {
+            String val = root.path(key).path("amount").asText("0");
+            return new BigDecimal(val);
+        } catch (Exception e) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    public void disconnect() {
+        synchronized (syncMonitor) {
+            state.set(ConnectionState.DISCONNECTED);
+            positions.clear();
+            accountSummaries.clear();
+            primaryAccountId = null;
+            lastSyncAt = null;
+            lastStatusCheckAt = Instant.now();
+            lastError = null;
+            gatewayReachable = false;
+            syncInProgress = false;
+            persistSnapshot();
+            log.info("IBKR connection cleared");
+        }
+    }
+
+    public ConnectionState getState() { return state.get(); }
+    public boolean isConnected() {
+        ConnectionState s = state.get();
+        return s == ConnectionState.CONNECTED || s == ConnectionState.SYNCING;
+    }
     public Map<String, IbkrPosition> getPositions() { return positions; }
     public Map<String, AccountSummary> getAccountSummaries() { return accountSummaries; }
+    public String getPrimaryAccountId() { return primaryAccountId; }
+    public Instant getLastSyncAt() { return lastSyncAt; }
+    public Instant getLastStatusCheckAt() { return lastStatusCheckAt; }
+    public String getLastError() { return lastError; }
+    public boolean isGatewayReachable() { return gatewayReachable; }
+    public boolean isSyncInProgress() { return syncInProgress; }
+    public boolean hasSnapshot() { return !positions.isEmpty() || lastSyncAt != null || !accountSummaries.isEmpty(); }
 
-    // ─── EWrapper callbacks ─────────────────────────────────
-
-    @Override
-    public void position(String account, Contract contract, com.ib.client.Decimal pos, double avgCost) {
-        IbkrPosition position = IbkrPosition.builder()
-                .account(account)
-                .symbol(contract.symbol())
-                .secType(contract.getSecType())
-                .currency(contract.currency())
-                .exchange(contract.exchange())
-                .position(BigDecimal.valueOf(pos.value().doubleValue()))
-                .avgCost(BigDecimal.valueOf(avgCost))
-                .timestamp(Instant.now())
-                .build();
-        positions.put(contract.symbol(), position);
-    }
-
-    @Override
-    public void positionEnd() {
-        log.info("Received {} positions from IBKR", positions.size());
-        positions.values().forEach(positionPublisher::publishPosition);
-    }
-
-    @Override
-    public void accountSummary(int reqId, String account, String tag, String value, String currency) {
-        AccountSummary summary = accountSummaries.computeIfAbsent(account, a ->
-                AccountSummary.builder().account(a).currency(currency).timestamp(Instant.now()).build());
+    private SessionProbe probeSession() {
+        JsonNode status = postJson("/v1/api/iserver/auth/status");
+        gatewayReachable = true;
+        boolean authorized = status.path("authenticated").asBoolean(false)
+                || status.path("connected").asBoolean(false)
+                || status.path("established").asBoolean(false);
+        if (authorized) {
+            return new SessionProbe(true, null);
+        }
 
         try {
-            BigDecimal v = new BigDecimal(value);
-            switch (tag) {
-                case "NetLiquidation"      -> summary.setNetLiquidation(v);
-                case "TotalCashValue"      -> summary.setTotalCash(v);
-                case "BuyingPower"         -> summary.setBuyingPower(v);
-                case "GrossPositionValue"  -> summary.setGrossPositionValue(v);
-                case "InitMarginReq"       -> summary.setInitMarginReq(v);
-                case "MaintMarginReq"      -> summary.setMaintMarginReq(v);
-                case "AvailableFunds"      -> summary.setAvailableFunds(v);
-                case "ExcessLiquidity"     -> summary.setExcessLiquidity(v);
+            String accountId = fetchPrimaryAccountId();
+            if (accountId != null && !accountId.isBlank()) {
+                log.info("IBKR auth status reported unauthenticated, but account access succeeded; treating session as authorized (account={})", accountId);
+                return new SessionProbe(true, accountId);
             }
-        } catch (NumberFormatException ignored) {}
+        } catch (WebClientResponseException e) {
+            log.debug("IBKR account probe failed with HTTP {} while auth status was unauthenticated", e.getStatusCode().value());
+        } catch (Exception e) {
+            log.debug("IBKR account probe failed while auth status was unauthenticated: {}", rootCauseMessage(e));
+        }
+
+        return new SessionProbe(false, null);
     }
 
-    @Override
-    public void accountSummaryEnd(int reqId) {
-        log.info("Received account summary for {} accounts", accountSummaries.size());
-        accountSummaries.values().forEach(positionPublisher::publishAccountSummary);
+    private String fetchPrimaryAccountId() {
+        JsonNode accounts = getJson("/v1/api/portfolio/accounts");
+        if (!accounts.isArray() || accounts.isEmpty()) return null;
+        JsonNode first = accounts.get(0);
+        String id = first.path("id").asText(first.path("accountId").asText(first.path("acctId").asText("")));
+        return id.isBlank() ? null : id;
     }
 
-    @Override
-    public void error(int id, int errorCode, String errorMsg, String advancedOrderRejectJson) {
-        if (errorCode >= 2100 && errorCode < 2200) return;  // Informational
-        if (errorCode == 502) {
-            log.error("TWS connection refused — is TWS/Gateway running with API enabled?");
-            connected.set(false);
-        } else {
-            log.warn("[TWS error {} req={}] {}", errorCode, id, errorMsg);
+    private List<IbkrPosition> fetchPositionsForAccount(String accountId) {
+        JsonNode data = getJson("/v1/api/portfolio/{id}/positions/0", accountId);
+        List<IbkrPosition> latest = new ArrayList<>();
+        if (!data.isArray()) return latest;
+
+        Instant now = Instant.now();
+        for (JsonNode p : data) {
+            String symbol = p.path("contractDesc").asText(
+                    p.path("ticker").asText("UNKNOWN"));
+            latest.add(IbkrPosition.builder()
+                    .account(accountId)
+                    .symbol(symbol)
+                    .secType(p.path("assetClass").asText("STK"))
+                    .currency(p.path("currency").asText("USD"))
+                    .exchange("")
+                    .position(BigDecimal.valueOf(p.path("position").asDouble()))
+                    .avgCost(BigDecimal.valueOf(p.path("avgCost").asDouble()))
+                    .marketPrice(BigDecimal.valueOf(p.path("mktPrice").asDouble()))
+                    .marketValue(BigDecimal.valueOf(p.path("mktValue").asDouble()))
+                    .unrealizedPnl(BigDecimal.valueOf(p.path("unrealizedPnl").asDouble()))
+                    .realizedPnl(BigDecimal.valueOf(p.path("realizedPnl").asDouble()))
+                    .timestamp(now)
+                    .build());
+        }
+        return latest;
+    }
+
+    private AccountSummary fetchAccountSummaryForAccount(String accountId) {
+        try {
+            JsonNode data = getJson("/v1/api/portfolio/{id}/summary", accountId);
+            AccountSummary summary = AccountSummary.builder()
+                    .account(accountId)
+                    .currency("USD")
+                    .timestamp(Instant.now())
+                    .build();
+            summary.setNetLiquidation(decimal(data, "netliquidation"));
+            summary.setTotalCash(decimal(data, "totalcashvalue"));
+            summary.setBuyingPower(decimal(data, "buyingpower"));
+            summary.setGrossPositionValue(decimal(data, "grosspositionvalue"));
+            summary.setInitMarginReq(decimal(data, "initmarginreq"));
+            summary.setMaintMarginReq(decimal(data, "maintmarginreq"));
+            summary.setAvailableFunds(decimal(data, "availablefunds"));
+            summary.setExcessLiquidity(decimal(data, "excessliquidity"));
+            return summary;
+        } catch (Exception e) {
+            log.warn("Account summary fetch failed for {}: {}", accountId, rootCauseMessage(e));
+            return null;
         }
     }
 
-    @Override public void error(Exception e)        { log.error("TWS exception", e); }
-    @Override public void error(String str)         { log.warn("TWS message: {}", str); }
-    @Override public void connectionClosed()        { log.warn("TWS connection closed"); connected.set(false); }
-    @Override public void connectAck()              { if (client.isAsyncEConnect()) client.startAPI(); }
-    @Override public void nextValidId(int orderId)  { log.debug("Next valid order ID: {}", orderId); }
+    private JsonNode getJson(String uri, Object... uriVars) {
+        return client.get()
+                .uri(uri, uriVars)
+                .retrieve()
+                .bodyToMono(JsonNode.class)
+                .block(Duration.ofSeconds(config.getRequestTimeoutSeconds()));
+    }
 
-    // Stub remaining EWrapper methods
-    @Override public void tickPrice(int a, int b, double c, TickAttrib d) {}
-    @Override public void tickSize(int a, int b, com.ib.client.Decimal c) {}
-    @Override public void tickOptionComputation(int a, int b, int c, double d, double e, double f, double g, double h, double i, double j, double k) {}
-    @Override public void tickGeneric(int a, int b, double c) {}
-    @Override public void tickString(int a, int b, String c) {}
-    @Override public void tickEFP(int a, int b, double c, String d, double e, int f, String g, double h, double i) {}
-    @Override public void orderStatus(int a, String b, com.ib.client.Decimal c, com.ib.client.Decimal d, double e, int f, int g, double h, int i, String j, double k) {}
-    @Override public void openOrder(int a, Contract b, Order c, OrderState d) {}
-    @Override public void openOrderEnd() {}
-    @Override public void updateAccountValue(String a, String b, String c, String d) {}
-    @Override public void updatePortfolio(Contract a, com.ib.client.Decimal b, double c, double d, double e, double f, double g, String h) {}
-    @Override public void updateAccountTime(String a) {}
-    @Override public void accountDownloadEnd(String a) {}
-    @Override public void contractDetails(int a, ContractDetails b) {}
-    @Override public void bondContractDetails(int a, ContractDetails b) {}
-    @Override public void contractDetailsEnd(int a) {}
-    @Override public void execDetails(int a, Contract b, Execution c) {}
-    @Override public void execDetailsEnd(int a) {}
-    @Override public void updateMktDepth(int a, int b, int c, int d, double e, com.ib.client.Decimal f) {}
-    @Override public void updateMktDepthL2(int a, int b, String c, int d, int e, double f, com.ib.client.Decimal g, boolean h) {}
-    @Override public void updateNewsBulletin(int a, int b, String c, String d) {}
-    @Override public void managedAccounts(String a) {}
-    @Override public void receiveFA(int a, String b) {}
-    @Override public void historicalData(int a, Bar b) {}
-    @Override public void scannerParameters(String a) {}
-    @Override public void scannerData(int a, int b, ContractDetails c, String d, String e, String f, String g) {}
-    @Override public void scannerDataEnd(int a) {}
-    @Override public void realtimeBar(int a, long b, double c, double d, double e, double f, com.ib.client.Decimal g, com.ib.client.Decimal h, int i) {}
-    @Override public void currentTime(long a) {}
-    @Override public void fundamentalData(int a, String b) {}
-    @Override public void deltaNeutralValidation(int a, DeltaNeutralContract b) {}
-    @Override public void tickSnapshotEnd(int a) {}
-    @Override public void marketDataType(int a, int b) {}
-    @Override public void commissionReport(CommissionReport a) {}
-    @Override public void positionMulti(int a, String b, String c, Contract d, com.ib.client.Decimal e, double f) {}
-    @Override public void positionMultiEnd(int a) {}
-    @Override public void accountUpdateMulti(int a, String b, String c, String d, String e, String f) {}
-    @Override public void accountUpdateMultiEnd(int a) {}
-    @Override public void securityDefinitionOptionalParameter(int a, String b, int c, String d, String e, java.util.Set<String> f, java.util.Set<Double> g) {}
-    @Override public void securityDefinitionOptionalParameterEnd(int a) {}
-    @Override public void softDollarTiers(int a, SoftDollarTier[] b) {}
-    @Override public void familyCodes(FamilyCode[] a) {}
-    @Override public void symbolSamples(int a, ContractDescription[] b) {}
-    @Override public void historicalDataEnd(int a, String b, String c) {}
-    @Override public void mktDepthExchanges(DepthMktDataDescription[] a) {}
-    @Override public void tickNews(int a, long b, String c, String d, String e, String f) {}
-    @Override public void smartComponents(int a, Map<Integer, java.util.Map.Entry<String, Character>> b) {}
-    @Override public void tickReqParams(int a, double b, String c, int d) {}
-    @Override public void newsProviders(NewsProvider[] a) {}
-    @Override public void newsArticle(int a, int b, String c) {}
-    @Override public void historicalNews(int a, String b, String c, String d, String e) {}
-    @Override public void historicalNewsEnd(int a, boolean b) {}
-    @Override public void headTimestamp(int a, String b) {}
-    @Override public void histogramData(int a, java.util.List<HistogramEntry> b) {}
-    @Override public void historicalDataUpdate(int a, Bar b) {}
-    @Override public void rerouteMktDataReq(int a, int b, String c) {}
-    @Override public void rerouteMktDepthReq(int a, int b, String c) {}
-    @Override public void marketRule(int a, PriceIncrement[] b) {}
-    @Override public void pnl(int a, double b, double c, double d) {}
-    @Override public void pnlSingle(int a, com.ib.client.Decimal b, double c, double d, double e, double f) {}
-    @Override public void historicalTicks(int a, java.util.List<HistoricalTick> b, boolean c) {}
-    @Override public void historicalTicksBidAsk(int a, java.util.List<HistoricalTickBidAsk> b, boolean c) {}
-    @Override public void historicalTicksLast(int a, java.util.List<HistoricalTickLast> b, boolean c) {}
-    @Override public void tickByTickAllLast(int a, int b, long c, double d, com.ib.client.Decimal e, TickAttribLast f, String g, String h) {}
-    @Override public void tickByTickBidAsk(int a, long b, double c, double d, com.ib.client.Decimal e, com.ib.client.Decimal f, TickAttribBidAsk g) {}
-    @Override public void tickByTickMidPoint(int a, long b, double c) {}
-    @Override public void orderBound(long a, int b, int c) {}
-    @Override public void completedOrder(Contract a, Order b, OrderState c) {}
-    @Override public void completedOrdersEnd() {}
-    @Override public void replaceFAEnd(int a, String b) {}
-    @Override public void wshMetaData(int a, String b) {}
-    @Override public void wshEventData(int a, String b) {}
-    @Override public void historicalSchedule(int a, String b, String c, String d, java.util.List<HistoricalSession> e) {}
-    @Override public void userInfo(int a, String b) {}
-    @Override public void verifyMessageAPI(String a) {}
-    @Override public void verifyCompleted(boolean a, String b) {}
-    @Override public void verifyAndAuthMessageAPI(String a, String b) {}
-    @Override public void verifyAndAuthCompleted(boolean a, String b) {}
-    @Override public void displayGroupList(int a, String b) {}
-    @Override public void displayGroupUpdated(int a, String b) {}
+    private JsonNode postJson(String uri) {
+        return client.post()
+                .uri(uri)
+                .header("Content-Length", "0")
+                .retrieve()
+                .bodyToMono(JsonNode.class)
+                .block(Duration.ofSeconds(config.getRequestTimeoutSeconds()));
+    }
+
+    private record SessionProbe(boolean authorized, String primaryAccountId) {}
+
+    private void handleGatewayResponseError(WebClientResponseException e, boolean duringSync) {
+        gatewayReachable = true;
+        if (e.getStatusCode().value() == 401) {
+            state.set(ConnectionState.AUTH_REQUIRED);
+            lastError = "Login required in IBKR Client Portal gateway";
+            return;
+        }
+
+        lastError = "IBKR gateway error: HTTP " + e.getStatusCode().value();
+        state.set(duringSync ? ConnectionState.LAST_SYNC_FAILED : ConnectionState.DEGRADED);
+    }
+
+    private void transitionToGatewayFailure(String message) {
+        gatewayReachable = false;
+        lastError = message;
+        state.set(hasSnapshot() ? ConnectionState.DEGRADED : ConnectionState.DISCONNECTED);
+    }
+
+    private String rootCauseMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) current = current.getCause();
+        String message = current.getMessage();
+        return (message == null || message.isBlank()) ? current.getClass().getSimpleName() : message;
+    }
 }

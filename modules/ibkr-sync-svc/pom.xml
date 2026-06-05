@@ -14,12 +14,16 @@
 
     <artifactId>ibkr-sync-svc</artifactId>
     <name>IBKR Sync Service</name>
-    <description>Read-only sync of IBKR positions, orders, and account balances via TWS API</description>
+    <description>Read-only sync of IBKR positions and account data via Client Portal Web API</description>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -29,39 +33,24 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
-
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
-
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
-
-        <!-- IBKR TWS API - download from interactivebrokers.github.io
-             Place TwsApi.jar in modules/ibkr-sync-svc/lib/ -->
-        <dependency>
-            <groupId>com.interactivebrokers</groupId>
-            <artifactId>tws-api</artifactId>
-            <version>10.30</version>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/lib/TwsApi.jar</systemPath>
-        </dependency>
-
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>
         </dependency>
-
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
-
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -76,7 +65,6 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <mainClass>com.alphatrade.ibkr.IbkrSyncApplication</mainClass>
-                    <includeSystemScope>true</includeSystemScope>
                 </configuration>
             </plugin>
         </plugins>

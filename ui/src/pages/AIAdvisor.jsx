@@ -9,6 +9,7 @@ import { cn, fmtMoney } from "../lib/cn";
 import { useNetWorth } from "../hooks/useNetWorth";
 import { useIbkrPositions } from "../hooks/useIbkrPositions";
 import { useBanking } from "../hooks/useBanking";
+import { summarizeCashFlow } from "../lib/banking";
 
 const AI_ADVISOR_URL = import.meta.env.VITE_AI_ADVISOR_URL || "http://localhost:8094";
 const DEFAULT_WATCH = ["AAPL", "NVDA", "MSFT", "VOO"];
@@ -22,7 +23,7 @@ const PROVIDER_LABELS = {
 
 export const AIAdvisor = () => {
   const { snapshot } = useNetWorth();
-  const { positions } = useIbkrPositions();
+  const { positions, summary } = useIbkrPositions();
   const { transactions } = useBanking();
 
   const [messages, setMessages] = useState([
@@ -46,10 +47,8 @@ export const AIAdvisor = () => {
       .catch(() => {});
   }, []);
 
-  const portfolioValue = positions.reduce((s, p) => s + p.shares * p.price, 0);
-  const totalSpend = transactions.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-  const totalIncome = transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const saveRate = totalIncome > 0 ? ((totalIncome - totalSpend) / totalIncome) * 100 : 0;
+  const portfolioValue = summary?.netLiquidation ?? positions.reduce((s, p) => s + (p.marketValue || p.shares * p.price), 0);
+  const { spending: totalSpend, income: totalIncome, saveRate } = summarizeCashFlow(transactions);
 
   const suggestions = [
     "Am I on track for FIRE by 38?",

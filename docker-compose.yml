@@ -89,13 +89,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   ollama-init:
     image: ollama/ollama:latest
@@ -194,7 +187,7 @@ services:
     depends_on: { postgres: { condition: service_healthy } }
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8085/health || exit 1"]
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1:8085/actuator/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -209,7 +202,7 @@ services:
     ports: ["8090:8090"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8090/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')\" >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -265,18 +258,11 @@ services:
     restart: unless-stopped
     # FinBERT downloads ~430MB model on first start; allow generous start_period
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8097/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8097/health')\" >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 180s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   # FinGPT-Forecaster (GPU-accelerated)
   fingpt-svc:
@@ -297,18 +283,11 @@ services:
     restart: unless-stopped
     # /health responds even before model is loaded (lazy-loads on first /forecast)
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8098/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8098/health')\" >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 60s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   # ============================================================
   # ALPHAWEALTH CORE SERVICES
@@ -319,27 +298,28 @@ services:
     ports: ["8096:8096"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8096/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8096/health')\" >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 30s
 
   ibkr-sync-svc:
-    build: { context: ./modules/ibkr-sync-svc, dockerfile: Dockerfile }
+    build: { context: ., dockerfile: modules/ibkr-sync-svc/Dockerfile }
     container_name: alphawealth-ibkr-sync
     ports: ["8091:8091"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - ibkr_data:/data
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/alphawealth
       DB_USER: alphatrade
       DB_PASSWORD: alphatrade123
       KAFKA_BOOTSTRAP: redpanda:9092
-      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
-      IBKR_PORT: ${IBKR_PORT:-7497}
-      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-100}
-      IBKR_ACCOUNT: ${IBKR_ACCOUNT:-}
+      IBKR_CP_GATEWAY_URL: ${IBKR_CP_GATEWAY_URL:-https://host.docker.internal:5001}
+      IBKR_PUBLIC_LOGIN_URL: ${IBKR_PUBLIC_LOGIN_URL:-https://localhost:5001}
+      IBKR_SNAPSHOT_PATH: /data/ibkr-snapshot.json
     depends_on:
       postgres: { condition: service_healthy }
       redpanda-init: { condition: service_completed_successfully }
@@ -352,7 +332,7 @@ services:
       start_period: 60s
 
   plaid-banking-svc:
-    build: { context: ./modules/plaid-banking-svc, dockerfile: Dockerfile }
+    build: { context: ., dockerfile: modules/plaid-banking-svc/Dockerfile }
     container_name: alphawealth-plaid
     ports: ["8092:8092"]
     environment:
@@ -360,15 +340,17 @@ services:
       DB_USER: alphatrade
       DB_PASSWORD: alphatrade123
       KAFKA_BOOTSTRAP: redpanda:9092
-      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID:-}
-      PLAID_SECRET: ${PLAID_SECRET:-}
-      PLAID_ENV: ${PLAID_ENV:-sandbox}
+      TELLER_APP_ID: ${TELLER_APP_ID:-}
+      TELLER_ENROLLMENTS_PATH: /data/teller-enrollments.json
+    volumes:
+      - ./secrets/teller:/certs:ro
+      - banking_data:/data
     depends_on:
       postgres: { condition: service_healthy }
       redpanda-init: { condition: service_completed_successfully }
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8092/health || exit 1"]
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8092/actuator/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -521,11 +503,9 @@ services:
       - live-data-svc
       - net-worth-svc
       - analysis-svc
-      - sentiment-svc
-      - fingpt-svc
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:80/ || exit 1"]
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1:80/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -536,3 +516,5 @@ volumes:
   grafana-data:
   ollama-data:
   hf-cache:
+  ibkr_data:
+  banking_data:

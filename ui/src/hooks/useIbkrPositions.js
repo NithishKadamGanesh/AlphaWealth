@@ -1,13 +1,13 @@
 // ui/src/hooks/useIbkrPositions.js
-// Fetches IBKR positions from ibkr-sync-svc:8091 and merges with live yfinance prices.
+// Reads normalized positions from ibkr-sync-svc and decorates them with live quotes.
 //
-// dataMode: "live" IBKR connected and returning positions /
-//           "stale" connected but last fetch failed /
-//           "simulated" not connected, showing mock holdings /
-//           "disconnected" reachable but TWS Gateway is offline
+// dataMode:
+//   "live"         gateway authenticated and backend snapshot is current
+//   "stale"        showing the last-known IBKR snapshot while auth/sync recovers
+//   "disconnected" ibkr-sync-svc is reachable but no broker snapshot exists yet
+//   "error"        ibkr-sync-svc itself is unreachable
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { portfolioHoldings as mockHoldings } from "../lib/mockData";
 
 const IBKR_URL = import.meta.env.VITE_IBKR_URL || "http://localhost:8091";
 const LIVE_URL = import.meta.env.VITE_LIVE_DATA_URL || "http://localhost:8096";
@@ -21,103 +21,125 @@ const SECTOR_MAP = {
 };
 
 export function useIbkrPositions() {
-  const [positions, setPositions] = useState(mockHoldings);
+  const [positions, setPositions] = useState([]);
   const [accounts, setAccounts] = useState([]);
+  const [summary, setSummary] = useState(null);
   const [status, setStatus] = useState({ connected: false });
-  const [dataMode, setDataMode] = useState("simulated");
+  const [dataMode, setDataMode] = useState("disconnected");
   const [lastError, setLastError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [loading, setLoading] = useState(true);
-  const failsRef = useRef(0);
-  const warnedRef = useRef(false);
+  const positionsRef = useRef([]);
+  const statusRef = useRef(null);
+
+  const commitPositions = (next) => {
+    positionsRef.current = next;
+    setPositions(next);
+  };
+
+  const resolveMode = (stat, positionCount) => {
+    const state = stat?.state;
+    if (state === "CONNECTED" || state === "SYNCING") return "live";
+    if (["AUTH_REQUIRED", "DEGRADED", "LAST_SYNC_FAILED"].includes(state)) {
+      return (stat?.hasSnapshot || positionCount > 0 || stat?.lastSyncAt) ? "stale" : "disconnected";
+    }
+    if (state === "DISCONNECTED") return "disconnected";
+    return (stat?.hasSnapshot || positionCount > 0) ? "stale" : "disconnected";
+  };
 
   const refresh = useCallback(async () => {
     try {
       const statusRes = await fetch(`${IBKR_URL}/ibkr/status`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!statusRes.ok) throw new Error(`HTTP ${statusRes.status} from ibkr-sync-svc`);
       const stat = await statusRes.json();
+      statusRef.current = stat;
       setStatus(stat);
-
-      // Service is reachable, but TWS Gateway not running -> "disconnected" is honest
-      if (!stat.connected) {
-        setDataMode("disconnected");
-        setLastError(null);
-        setLoading(false);
-        return;
-      }
 
       const posRes = await fetch(`${IBKR_URL}/ibkr/positions`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!posRes.ok) throw new Error("Positions fetch failed");
       const posArr = await posRes.json();
-
-      if (!Array.isArray(posArr) || posArr.length === 0) {
-        setDataMode("disconnected");
-        setLoading(false);
-        return;
-      }
+      const normalizedPositions = Array.isArray(posArr) ? posArr : [];
 
       try {
         const accRes = await fetch(`${IBKR_URL}/ibkr/accounts`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-        if (accRes.ok) setAccounts(await accRes.json());
+        if (accRes.ok) {
+          const accountSummaries = await accRes.json();
+          setAccounts(accountSummaries);
+          const primarySummary = Array.isArray(accountSummaries)
+            ? accountSummaries.find(a => a.account === stat?.primaryAccount) || accountSummaries[0] || null
+            : null;
+          setSummary(primarySummary);
+        }
       } catch { /* accounts is best-effort */ }
 
       // Get live prices via yfinance for each symbol
-      const symbols = posArr.map(p => p.symbol).join(",");
       let livePrices = {};
-      try {
-        const liveRes = await fetch(`${LIVE_URL}/quotes?symbols=${symbols}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-        if (liveRes.ok) {
-          const data = await liveRes.json();
-          for (const [sym, q] of Object.entries(data)) {
-            if (q && !q.error) livePrices[sym] = q;
+      const symbols = normalizedPositions.map(p => p.symbol).filter(Boolean);
+      if (symbols.length > 0) {
+        try {
+          const liveRes = await fetch(`${LIVE_URL}/quotes?symbols=${symbols.join(",")}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+          if (liveRes.ok) {
+            const data = await liveRes.json();
+            for (const [sym, q] of Object.entries(data)) {
+              if (q && !q.error) livePrices[sym] = q;
+            }
           }
-        }
-      } catch { /* prices fall back to avgCost */ }
+        } catch { /* prices fall back to avgCost */ }
+      }
 
-      const totalValue = posArr.reduce((s, p) => {
+      const totalValue = normalizedPositions.reduce((s, p) => {
         const live = livePrices[p.symbol];
-        const price = live?.price || Number(p.avgCost) || 0;
-        return s + price * Number(p.position || 0);
+        const shares = Number(p.position || 0);
+        const cost = Number(p.avgCost) || 0;
+        const ibkrPrice = Number(p.marketPrice) || 0;
+        const ibkrValue = Number(p.marketValue) || ibkrPrice * shares;
+        const price = live?.price || ibkrPrice || cost;
+        const value = live?.price ? shares * live.price : ibkrValue || shares * cost;
+        return s + (value || price * shares);
       }, 0);
 
-      const merged = posArr.map(p => {
+      const merged = normalizedPositions.map(p => {
         const sym = p.symbol;
         const live = livePrices[sym];
         const shares = Number(p.position) || 0;
         const cost = Number(p.avgCost) || 0;
-        const price = live?.price || cost;
+        const ibkrPrice = Number(p.marketPrice) || 0;
+        const ibkrValue = Number(p.marketValue) || ibkrPrice * shares;
+        const price = live?.price || ibkrPrice || cost;
         const change = live?.change_pct || 0;
-        const value = shares * price;
+        const value = live?.price ? shares * live.price : ibkrValue || shares * cost;
         const weight = totalValue > 0 ? (value / totalValue) * 100 : 0;
         return {
           ticker: sym, symbol: sym, name: sym,
           shares, price, cost,
+          avgCost: cost,
+          currentPrice: price,
+          ibkrPrice,
           weight: +weight.toFixed(1),
           sector: SECTOR_MAP[sym] || "Other",
           change, change_pct: change,
           value, marketValue: value,
+          ibkrMarketValue: ibkrValue,
+          unrealizedPnl: Number(p.unrealizedPnl) || (value - shares * cost),
           currency: p.currency || "USD",
         };
       });
 
-      setPositions(merged);
-      setDataMode("live");
-      setLastError(null);
-      setLastUpdate(Date.now());
-      failsRef.current = 0;
-      warnedRef.current = false;
+      commitPositions(merged);
+      setDataMode(resolveMode(stat, merged.length));
+      setLastError(stat.lastError || null);
+      setLastUpdate(stat.lastSyncAt ? new Date(stat.lastSyncAt).getTime() : null);
     } catch (e) {
-      failsRef.current++;
       const msg = String(e.message || e);
+      const hadSnapshot = positionsRef.current.length > 0 || statusRef.current?.lastSyncAt;
       setLastError(msg);
-      if (failsRef.current === 1) {
+      if (hadSnapshot) {
         setDataMode("stale");
-      } else if (failsRef.current >= 2) {
-        if (!warnedRef.current) {
-          console.warn(`[useIbkrPositions] ibkr-sync-svc unreachable. Showing demo. Reason: ${msg}`);
-          warnedRef.current = true;
-        }
-        setDataMode("simulated");
+      } else {
+        setDataMode("error");
+        commitPositions([]);
+        setAccounts([]);
+        setSummary(null);
       }
     } finally {
       setLoading(false);
@@ -131,7 +153,7 @@ export function useIbkrPositions() {
   }, [refresh]);
 
   return {
-    positions, accounts, status,
+    positions, accounts, summary, status,
     dataMode,
     isReal: dataMode === "live",
     lastError, lastUpdate, loading,

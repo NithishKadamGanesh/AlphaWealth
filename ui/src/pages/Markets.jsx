@@ -8,12 +8,11 @@ import { Icon } from "../components/Icon";
 import { Card } from "../components/ui/Card";
 import { Tag, Pulse } from "../components/ui/Tag";
 import { PageHeader } from "../components/ui/PageHeader";
-import { SkeletonCard } from "../components/ui/Skeleton";
 import { cn, fmtMoney } from "../lib/cn";
 import { useSymbolSentiment } from "../hooks/useSentiment";
 import { ForecastWidget } from "../components/ForecastWidget";
 
-const ANALYSIS_URL  = import.meta.env.VITE_ANALYSIS_URL  || "http://localhost:8088";
+const ANALYSIS_URL = import.meta.env.VITE_ANALYSIS_URL || "http://localhost:8088";
 const LIVE_DATA_URL = import.meta.env.VITE_LIVE_DATA_URL || "http://localhost:8096";
 
 const sentColor = (label) =>
@@ -21,6 +20,13 @@ const sentColor = (label) =>
 
 const biasColor = (bias) =>
   bias === "BULLISH" ? "positive" : bias === "BEARISH" ? "negative" : "warning";
+
+const fearGreedColor = (score) => {
+  if (typeof score !== "number") return "muted";
+  if (score >= 60) return "positive";
+  if (score <= 40) return "negative";
+  return "warning";
+};
 
 const convColor = (c) => {
   if (!c) return "muted";
@@ -36,61 +42,153 @@ export const Markets = ({ quotes }) => {
   const [selectedSym, setSelectedSym] = useState("AAPL");
   const [period, setPeriod] = useState("1mo");
   const [chartData, setChartData] = useState([]);
+  const [historyError, setHistoryError] = useState(null);
   const [levels, setLevels] = useState(null);
   const [signal, setSignal] = useState(null);
+  const [signalError, setSignalError] = useState(null);
   const [patterns, setPatterns] = useState([]);
   const [convergence, setConvergence] = useState(null);
   const [indices, setIndices] = useState([]);
   const [sectors, setSectors] = useState([]);
+  const [fearGreed, setFearGreed] = useState(null);
+  const [movers, setMovers] = useState({ gainers: [], losers: [], most_active: [] });
 
   const { data: sentiment, loading: sentLoading } = useSymbolSentiment(selectedSym);
 
   useEffect(() => {
-    fetch(`${LIVE_DATA_URL}/history/${selectedSym}?period=${period}&interval=1d`)
-      .then(r => r.json())
-      .then(d => setChartData((d.bars || []).map((b, i) => ({ t: i, date: b.date, price: b.close }))))
-      .catch(() => setChartData([]));
+    const ctl = new AbortController();
+    setHistoryError(null);
+
+    fetch(`${LIVE_DATA_URL}/history/${selectedSym}?period=${period}&interval=1d`, { signal: ctl.signal })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status} from live-data-svc`);
+        return r.json();
+      })
+      .then(d => {
+        const bars = (d.bars || []).map((b, i) => ({ t: i, date: b.date, price: b.close }));
+        setChartData(bars);
+        if (bars.length === 0) setHistoryError(`No chart data available for ${selectedSym}`);
+      })
+      .catch((e) => {
+        if (e.name === "AbortError") return;
+        setChartData([]);
+        setHistoryError(`Chart data unavailable: ${e.message || e}`);
+      });
+
+    return () => ctl.abort();
   }, [selectedSym, period]);
 
   useEffect(() => {
     const ctl = new AbortController();
     const opts = { signal: ctl.signal };
-    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/levels`, opts)
-      .then(r => r.json()).then(d => setLevels(d.error ? null : d)).catch(() => {});
-    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/signal`, opts)
-      .then(r => r.json()).then(d => setSignal(d.error ? null : d)).catch(() => {});
-    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/patterns`, opts)
-      .then(r => r.json()).then(d => setPatterns(Array.isArray(d) ? d.slice(-5).reverse() : []))
-      .catch(() => setPatterns([]));
-    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/multitimeframe`, opts)
-      .then(r => r.json()).then(d => setConvergence(d.error ? null : d)).catch(() => {});
-    return () => ctl.abort();
-  }, [selectedSym]);
 
-  // Fetch live indices
-  useEffect(() => {
-    fetch(`${LIVE_DATA_URL}/quotes?symbols=^GSPC,^DJI,^IXIC,^VIX`)
+    setLevels(null);
+    setSignal(null);
+    setSignalError(null);
+    setPatterns([]);
+    setConvergence(null);
+
+    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/levels`, opts)
       .then(r => r.json())
       .then(d => {
-        const mapped = Object.entries(d).map(([ticker, q]) => ({
-          ticker, name: { "^GSPC": "S&P 500", "^DJI": "Dow Jones", "^IXIC": "Nasdaq", "^VIX": "VIX" }[ticker] || ticker,
-          value: q.price, change: q.change_pct
-        }));
-        if (mapped.length > 0) setIndices(mapped);
+        if (!Array.isArray(d)) return;
+        setLevels({
+          support: d.filter(l => l.type === "SUPPORT").map(l => l.price),
+          resistance: d.filter(l => l.type === "RESISTANCE").map(l => l.price),
+        });
       })
       .catch(() => {});
 
-    fetch(`${ANALYSIS_URL}/api/analysis/sectors`)
+    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/signal`, opts)
       .then(r => r.json())
-      .then(d => { if (Array.isArray(d) && d.length > 0) setSectors(d); })
+      .then(d => {
+        if (d?.error) {
+          setSignalError(d.error);
+          return;
+        }
+        setSignal(d);
+      })
+      .catch((e) => {
+        if (e.name === "AbortError") return;
+        setSignalError("analysis-svc unavailable");
+      });
+
+    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/patterns`, opts)
+      .then(r => r.json())
+      .then(d => setPatterns(Array.isArray(d) ? d.slice(-5).reverse() : []))
+      .catch(() => setPatterns([]));
+
+    fetch(`${ANALYSIS_URL}/api/analysis/${selectedSym}/multitimeframe`, opts)
+      .then(r => r.json())
+      .then(d => setConvergence(d?.error ? null : d))
       .catch(() => {});
+
+    return () => ctl.abort();
+  }, [selectedSym]);
+
+  useEffect(() => {
+    const ctl = new AbortController();
+    const opts = { signal: ctl.signal };
+
+    fetch(`${LIVE_DATA_URL}/indices`, opts)
+      .then(r => r.json())
+      .then(d => {
+        const mapped = Object.entries(d || {})
+          .map(([ticker, q]) => ({
+            ticker,
+            name: q.name || ticker,
+            value: q.price,
+            change: q.change_pct,
+          }))
+          .filter(idx => typeof idx.value === "number");
+        setIndices(mapped);
+      })
+      .catch(() => {});
+
+    fetch(`${LIVE_DATA_URL}/sectors`, opts)
+      .then(r => r.json())
+      .then(d => {
+        if (!Array.isArray(d)) return;
+        const mapped = d
+          .filter(s => typeof s.change_pct === "number")
+          .map(s => ({ ticker: s.ticker, name: s.sector || s.name || s.ticker, change: s.change_pct }));
+        setSectors(mapped);
+      })
+      .catch(() => {});
+
+    fetch(`${LIVE_DATA_URL}/movers`, opts)
+      .then(r => r.json())
+      .then(d => setMovers({
+        gainers: Array.isArray(d?.gainers) ? d.gainers : [],
+        losers: Array.isArray(d?.losers) ? d.losers : [],
+        most_active: Array.isArray(d?.most_active) ? d.most_active : [],
+      }))
+      .catch(() => {});
+
+    fetch(`${LIVE_DATA_URL}/fear-greed`, opts)
+      .then(r => r.json())
+      .then(d => setFearGreed(d))
+      .catch(() => {});
+
+    return () => ctl.abort();
   }, []);
+
+  const chartStatus = historyError
+    ? historyError
+    : levels
+      ? "S/R overlay active"
+      : chartData.length > 0
+        ? "loading levels..."
+        : "loading bars...";
+
+  const moverList = movers.gainers.length > 0 ? movers.gainers : movers.most_active;
+  const regimeLabel = signal?.regime || "rule-based";
 
   return (
     <div className="space-y-6 max-w-[1400px]">
       <PageHeader
         title="Market Intelligence"
-        subtitle="yfinance — analysis-svc — FinBERT sentiment — FinGPT-Forecaster"
+        subtitle="live-data-svc — analysis-svc — FinBERT sentiment — FinGPT-Forecaster"
         badge={
           <>
             <Tag variant="positive" dot>LIVE</Tag>
@@ -100,11 +198,10 @@ export const Markets = ({ quotes }) => {
         }
       />
 
-      {/* Indices + Fear/Greed */}
-      {indices.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-fade-in">
-          <Card className="lg:col-span-2">
-            <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-3">Major Indices</div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-fade-in">
+        <Card className="lg:col-span-2">
+          <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-3">Major Indices</div>
+          {indices.length > 0 ? (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               {indices.map(idx => (
                 <div key={idx.ticker} className={cn(
@@ -119,18 +216,33 @@ export const Markets = ({ quotes }) => {
                 </div>
               ))}
             </div>
-          </Card>
+          ) : (
+            <div className="text-center py-8 text-muted text-xs">Index data is unavailable right now.</div>
+          )}
+        </Card>
 
-          <Card className="bg-ink text-white border-ink">
-            <div className="text-2xs uppercase tracking-wider text-zinc-500 font-medium font-mono">Fear & Greed Index</div>
-            <div className="text-center mt-4 text-zinc-500 text-xs font-mono">
-              Connect to live-data-svc for real-time index
+        <Card className="bg-ink text-white border-ink">
+          <div className="text-2xs uppercase tracking-wider text-zinc-500 font-medium font-mono">Fear & Greed Index</div>
+          {fearGreed?.available ? (
+            <div className="mt-5">
+              <div className={cn("font-display text-4xl font-extrabold", `text-${fearGreedColor(fearGreed.score)}`)}>
+                {fearGreed.score}
+              </div>
+              <div className={cn("mt-1 text-xs font-mono uppercase tracking-wider", `text-${fearGreedColor(fearGreed.score)}`)}>
+                {fearGreed.rating || "unknown"}
+              </div>
+              <div className="mt-4 text-2xs text-zinc-400">
+                {fearGreed.stale ? "Showing cached snapshot from last successful fetch" : "Live source connected"}
+              </div>
             </div>
-          </Card>
-        </div>
-      )}
+          ) : (
+            <div className="mt-4 text-zinc-500 text-xs font-mono">
+              Fear & Greed source unavailable right now.
+            </div>
+          )}
+        </Card>
+      </div>
 
-      {/* Symbol picker */}
       <Card padded={false} className="p-3 animate-slide-up" style={{ animationDelay: "50ms" }}>
         <div className="flex gap-2 overflow-x-auto pb-1">
           {Object.keys(quotes).map(s => {
@@ -151,7 +263,6 @@ export const Markets = ({ quotes }) => {
         </div>
       </Card>
 
-      {/* Main chart + Signal */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-slide-up" style={{ animationDelay: "100ms" }}>
         <Card className="lg:col-span-2">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-6">
@@ -166,11 +277,11 @@ export const Markets = ({ quotes }) => {
                 </span>
               </div>
               <div className="text-xs text-muted mt-1">
-                yfinance — {chartData.length} bars — {levels ? "S/R overlay active" : "loading levels..."}
+                live-data-svc — {chartData.length} bars — {chartStatus}
               </div>
             </div>
             <div className="flex gap-1.5 flex-wrap">
-              {[["1D","5d"],["1M","1mo"],["3M","3mo"],["6M","6mo"],["1Y","1y"],["5Y","5y"]].map(([lbl, p]) => (
+              {[["1D", "5d"], ["1M", "1mo"], ["3M", "3mo"], ["6M", "6mo"], ["1Y", "1y"], ["5Y", "5y"]].map(([lbl, p]) => (
                 <button key={p} onClick={() => setPeriod(p)} className={cn(
                   "px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all",
                   p === period ? "bg-positive text-ink" : "text-muted border border-line hover:border-ink/30"
@@ -178,31 +289,37 @@ export const Markets = ({ quotes }) => {
               ))}
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="mkt-grad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={T.lime} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={T.lime} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
-              <XAxis dataKey="t" tick={{ fontSize: 10, fill: T.muted }} axisLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: T.muted }} axisLine={false} domain={["auto", "auto"]} />
-              <Tooltip contentStyle={{ background: T.ink, border: "none", borderRadius: 8, color: "#fff" }}
-                       labelFormatter={(_, p) => p?.[0]?.payload?.date || ""}
-                       formatter={(v) => [`$${v?.toFixed?.(2)}`, "Close"]} />
-              <Area type="monotone" dataKey="price" stroke={T.lime} strokeWidth={2.5} fill="url(#mkt-grad)" />
-              {levels?.support?.slice(0, 3).map((lvl, i) => (
-                <ReferenceLine key={`s${i}`} y={lvl} stroke={T.lime} strokeDasharray="4 4" strokeOpacity={0.6}
-                               label={{ value: `S ${lvl?.toFixed(2)}`, position: "right", fill: T.lime, fontSize: 10 }} />
-              ))}
-              {levels?.resistance?.slice(0, 3).map((lvl, i) => (
-                <ReferenceLine key={`r${i}`} y={lvl} stroke={T.red} strokeDasharray="4 4" strokeOpacity={0.6}
-                               label={{ value: `R ${lvl?.toFixed(2)}`, position: "right", fill: T.red, fontSize: 10 }} />
-              ))}
-            </AreaChart>
-          </ResponsiveContainer>
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="mkt-grad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={T.lime} stopOpacity={0.3} />
+                    <stop offset="100%" stopColor={T.lime} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
+                <XAxis dataKey="t" tick={{ fontSize: 10, fill: T.muted }} axisLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: T.muted }} axisLine={false} domain={["auto", "auto"]} />
+                <Tooltip contentStyle={{ background: T.ink, border: "none", borderRadius: 8, color: "#fff" }}
+                  labelFormatter={(_, p) => p?.[0]?.payload?.date || ""}
+                  formatter={(v) => [`$${v?.toFixed?.(2)}`, "Close"]} />
+                <Area type="monotone" dataKey="price" stroke={T.lime} strokeWidth={2.5} fill="url(#mkt-grad)" />
+                {levels?.support?.slice(0, 3).map((lvl, i) => (
+                  <ReferenceLine key={`s${i}`} y={lvl} stroke={T.lime} strokeDasharray="4 4" strokeOpacity={0.6}
+                    label={{ value: `S ${lvl?.toFixed(2)}`, position: "right", fill: T.lime, fontSize: 10 }} />
+                ))}
+                {levels?.resistance?.slice(0, 3).map((lvl, i) => (
+                  <ReferenceLine key={`r${i}`} y={lvl} stroke={T.red} strokeDasharray="4 4" strokeOpacity={0.6}
+                    label={{ value: `R ${lvl?.toFixed(2)}`, position: "right", fill: T.red, fontSize: 10 }} />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[300px] flex items-center justify-center text-xs text-muted">
+              {historyError || `Loading ${selectedSym} bars...`}
+            </div>
+          )}
         </Card>
 
         <Card className="bg-ink text-white border-ink">
@@ -220,11 +337,14 @@ export const Markets = ({ quotes }) => {
                 <div className="text-2xs font-mono text-ink/70">confidence {(signal.confidence * 100).toFixed(0)}%</div>
               </div>
               <div className="text-xs text-zinc-400 mb-3">
-                Regime: <span className="text-positive font-mono">{signal.regime}</span>
+                Mode: <span className="text-positive font-mono">{regimeLabel}</span>
               </div>
+              <div className="text-xs text-zinc-400 mb-4">{signal.rationale}</div>
             </>
           ) : (
-            <div className="text-muted text-xs py-2">Waiting for analysis-svc...</div>
+            <div className="text-muted text-xs py-2">
+              {signalError || historyError || "Waiting for analysis-svc..."}
+            </div>
           )}
 
           {convergence?.convergence && (
@@ -252,13 +372,12 @@ export const Markets = ({ quotes }) => {
         </Card>
       </div>
 
-      {/* FinBERT Sentiment */}
       <Card padded={false} className="animate-slide-up" style={{ animationDelay: "200ms" }}>
         <div className="px-5 py-4 border-b border-line flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
           <div className="flex items-center gap-2">
             <Icon name="sparkle" size={14} color={T.cyan} stroke={2.5} />
             <span className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">News Sentiment — {selectedSym}</span>
-            <Tag variant="accent">FinBERT — GPU</Tag>
+            <Tag variant="accent">FinBERT</Tag>
           </div>
           {sentiment?.aggregated && (
             <div className="flex items-center gap-3">
@@ -287,9 +406,9 @@ export const Markets = ({ quotes }) => {
                 <svg viewBox="0 0 200 100" className="w-full h-full">
                   <path d="M 20 95 A 80 80 0 0 1 180 95" stroke={T.border} strokeWidth="14" fill="none" strokeLinecap="round" />
                   <path d="M 20 95 A 80 80 0 0 1 180 95"
-                        stroke={T[sentColor(sentiment.aggregated.label) === "positive" ? "lime" : sentColor(sentiment.aggregated.label) === "negative" ? "red" : "amber"]}
-                        strokeWidth="14" fill="none" strokeLinecap="round"
-                        strokeDasharray={`${((sentiment.aggregated.score + 1) / 2) * 251} 251`} />
+                    stroke={T[sentColor(sentiment.aggregated.label) === "positive" ? "lime" : sentColor(sentiment.aggregated.label) === "negative" ? "red" : "amber"]}
+                    strokeWidth="14" fill="none" strokeLinecap="round"
+                    strokeDasharray={`${((sentiment.aggregated.score + 1) / 2) * 251} 251`} />
                 </svg>
                 <div className="absolute bottom-0 left-0 right-0 text-center">
                   <div className={cn("font-display text-2xl font-extrabold", `text-${sentColor(sentiment.aggregated.label)}`)}>
@@ -349,12 +468,10 @@ export const Markets = ({ quotes }) => {
         )}
       </Card>
 
-      {/* FinGPT Forecaster */}
       <div className="animate-slide-up" style={{ animationDelay: "300ms" }}>
         <ForecastWidget symbol={selectedSym} />
       </div>
 
-      {/* Patterns */}
       {patterns.length > 0 && (
         <Card className="animate-slide-up" style={{ animationDelay: "350ms" }}>
           <div className="flex justify-between items-center mb-4">
@@ -383,17 +500,16 @@ export const Markets = ({ quotes }) => {
         </Card>
       )}
 
-      {/* Sectors */}
-      {sectors.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-slide-up" style={{ animationDelay: "400ms" }}>
-          <Card className="lg:col-span-2">
-            <div className="flex justify-between mb-4">
-              <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">Sector Performance</div>
-              <Tag variant="default">{sectors.length} sectors</Tag>
-            </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-slide-up" style={{ animationDelay: "400ms" }}>
+        <Card className="lg:col-span-2">
+          <div className="flex justify-between mb-4">
+            <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">Sector Performance</div>
+            <Tag variant="default">{sectors.length}</Tag>
+          </div>
+          {sectors.length > 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
               {sectors.map(s => (
-                <div key={s.name} className={cn(
+                <div key={s.ticker} className={cn(
                   "p-4 rounded-lg border",
                   s.change >= 0 ? "bg-positive/10 border-positive/20" : "bg-negative/10 border-negative/20"
                 )}>
@@ -404,16 +520,37 @@ export const Markets = ({ quotes }) => {
                 </div>
               ))}
             </div>
-          </Card>
+          ) : (
+            <div className="text-center py-8 text-muted text-xs">Sector data is unavailable right now.</div>
+          )}
+        </Card>
 
-          <Card>
-            <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-4">Top Movers</div>
-            <div className="text-center py-8 text-muted text-xs">
-              Connect live-data-svc for real-time movers
+        <Card>
+          <div className="flex justify-between items-center mb-4">
+            <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">Top Movers</div>
+            <Tag variant="accent">{moverList.length}</Tag>
+          </div>
+          {moverList.length > 0 ? (
+            <div className="space-y-2">
+              {moverList.slice(0, 5).map((m) => (
+                <div key={m.symbol} className="p-3 bg-canvas rounded-lg border border-line">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-bold font-mono">{m.symbol}</div>
+                      <div className="text-2xs text-muted">{fmtMoney(m.price || 0)}</div>
+                    </div>
+                    <div className={cn("text-xs font-mono font-bold", m.change_pct >= 0 ? "text-positive" : "text-negative")}>
+                      {m.change_pct >= 0 ? "+" : ""}{m.change_pct?.toFixed?.(2) ?? "0.00"}%
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
-          </Card>
-        </div>
-      )}
+          ) : (
+            <div className="text-center py-8 text-muted text-xs">Top mover data is unavailable right now.</div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 };
