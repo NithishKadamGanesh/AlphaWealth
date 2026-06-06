@@ -7,15 +7,25 @@ scrape_configs:
     static_configs:
       - targets: ["prometheus:9090"]
 
-  - job_name: alphatrade-services
+  # Java Spring Boot services expose Micrometer metrics at /actuator/prometheus
+  - job_name: alphawealth-java
     metrics_path: /actuator/prometheus
     static_configs:
       - targets:
-          - order-gateway:8081
-          - risk-svc:8082
-          - match-engine:8083
-          - portfolio-svc:8084
-          - api-gateway:8085
-          - market-data-svc:8087
           - analysis-svc:8088
           - backtest-svc:8089
+          - ibkr-sync-svc:8091
+          - teller-banking-svc:8092
+          - net-worth-svc:8093
+          - ai-advisor-svc:8094
+          - alerts-svc:8095
+
+  # Python FastAPI services expose metrics at /metrics
+  # (prometheus-fastapi-instrumentator)
+  - job_name: alphawealth-python
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - live-data-svc:8096
+          - sentiment-svc:8097
+          - fingpt-svc:8098

@@ -15,6 +15,7 @@ import { summarizeCashFlow } from "../lib/banking";
 import { useNetWorth } from "../hooks/useNetWorth";
 import { useBanking } from "../hooks/useBanking";
 import { useIbkrPositions } from "../hooks/useIbkrPositions";
+import { getDisplayName, getFireTarget, timeOfDayGreeting } from "../lib/userPrefs";
 
 const PERIODS = [
   { id: "1W",  label: "1W"  },
@@ -52,7 +53,10 @@ export const Dashboard = ({ onNav, quotes, isLive, dataMode: quotesMode = "unkno
 
   const sparkData = history.map(h => h.v ?? h.value ?? 0);
 
-  const fireTarget = 2_500_000;
+  // User-configurable preferences (Settings page writes these to localStorage).
+  const displayName = getDisplayName();
+  const greeting = timeOfDayGreeting();
+  const fireTarget = getFireTarget();
   const fireProgress = snapshot?.netWorth ? Math.min(snapshot.netWorth / fireTarget * 100, 100) : 0;
 
   // Build activity from real data
@@ -86,7 +90,7 @@ export const Dashboard = ({ onNav, quotes, isLive, dataMode: quotesMode = "unkno
             </div>
             <div className="flex items-baseline gap-2 text-base text-muted flex-wrap">
               <span className="text-lg text-muted italic" style={{ fontFamily: "'Georgia', serif" }}>
-                Good morning, Nithish.
+                {greeting}, {displayName}.
               </span>
               <span className="text-subtle hidden sm:inline">-</span>
               <span className="font-mono text-xs hidden sm:inline">

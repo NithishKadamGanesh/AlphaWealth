@@ -10,6 +10,10 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import jakarta.annotation.PostConstruct;
+
+import javax.net.ssl.TrustManagerFactory;
+import java.io.FileInputStream;
+import java.security.KeyStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
@@ -57,9 +61,7 @@ public class IbkrConnectionService {
 
     private void buildClient() {
         try {
-            SslContext sslContext = SslContextBuilder.forClient()
-                    .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                    .build();
+            SslContext sslContext = buildSslContext();
             HttpClient httpClient = HttpClient.create()
                     .followRedirect(true)
                     .responseTimeout(Duration.ofSeconds(config.getRequestTimeoutSeconds()))
@@ -71,6 +73,45 @@ public class IbkrConnectionService {
         } catch (Exception e) {
             log.error("Failed to create WebClient", e);
         }
+    }
+
+    /**
+     * Build a TLS context for talking to the IBKR Client Portal gateway.
+     *
+     * Preference order:
+     *  1. A user-supplied truststore (IBKR_TRUST_STORE_PATH) — fully validated TLS.
+     *  2. {@code trustSelfSigned=true} (default) — accept the gateway's self-signed cert
+     *     but emit a single startup WARN so it is visible in logs.
+     *  3. {@code trustSelfSigned=false} with no truststore — use system defaults
+     *     (will fail handshake; user must install the cert in the JDK trust store).
+     */
+    private SslContext buildSslContext() throws Exception {
+        String trustStorePath = config.getTrustStorePath();
+        if (trustStorePath != null && !trustStorePath.isBlank()) {
+            log.info("Loading IBKR gateway truststore from {}", trustStorePath);
+            KeyStore ks = KeyStore.getInstance(config.getTrustStoreType());
+            try (FileInputStream fis = new FileInputStream(trustStorePath)) {
+                char[] pass = config.getTrustStorePassword() == null ? new char[0]
+                        : config.getTrustStorePassword().toCharArray();
+                ks.load(fis, pass);
+            }
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(
+                    TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(ks);
+            return SslContextBuilder.forClient().trustManager(tmf).build();
+        }
+
+        if (config.isTrustSelfSigned()) {
+            log.warn("IBKR gateway TLS: trusting self-signed certs (trustSelfSigned=true). "
+                    + "For production, set IBKR_TRUST_STORE_PATH to a JKS/PKCS12 containing "
+                    + "the gateway certificate.");
+            return SslContextBuilder.forClient()
+                    .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                    .build();
+        }
+
+        log.info("IBKR gateway TLS: using system default trust store");
+        return SslContextBuilder.forClient().build();
     }
 
     private void restoreSnapshot() {

@@ -36,28 +36,14 @@
         <!-- Shared library used by every Java service -->
         <module>modules/common</module>
 
-        <!-- AlphaWealth Command Center: default profile, monitoring/advisory -->
+        <!-- AlphaWealth Command Center: monitoring/advisory services -->
         <module>modules/analysis-svc</module>
         <module>modules/backtest-svc</module>
-        <module>modules/api-gw-graphql</module>
         <module>modules/ibkr-sync-svc</module>
-        <module>modules/plaid-banking-svc</module>
+        <module>modules/teller-banking-svc</module>
         <module>modules/net-worth-svc</module>
         <module>modules/ai-advisor-svc</module>
         <module>modules/alerts-svc</module>
-
-        <!--
-          Legacy trading services from the original alphatrade-engine project.
-          Disabled by default in docker-compose.yml (gated behind
-          profile=trading). Kept in the reactor so they continue to build
-          and so the trading profile can be revived without code archaeology.
-          See ARCHITECTURE.md "Lineage" section.
-        -->
-        <module>modules/order-gateway-svc</module>
-        <module>modules/risk-svc</module>
-        <module>modules/match-engine-svc</module>
-        <module>modules/portfolio-svc</module>
-        <module>modules/market-data-svc</module>
     </modules>
 
     <dependencyManagement>

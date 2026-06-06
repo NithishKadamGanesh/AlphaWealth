@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { Plus } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip
@@ -13,25 +15,75 @@ import { cn, fmtMoney } from "../lib/cn";
 import { useBanking } from "../hooks/useBanking";
 import { buildDailySpend, summarizeCashFlow } from "../lib/banking";
 
-const loadTellerScript = () => new Promise((resolve) => {
+const loadTellerScript = () => new Promise((resolve, reject) => {
   if (window.TellerConnect) { resolve(); return; }
   const s = document.createElement("script");
   s.src = "https://cdn.teller.io/connect/connect.js";
   s.onload = resolve;
+  s.onerror = () => reject(new Error("Could not load Teller Connect"));
   document.body.appendChild(s);
 });
 
 export const Banking = () => {
   const { accounts, transactions, categories, isReal, loading, appId, enroll } = useBanking();
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState(null);
 
   const connectBank = async () => {
-    await loadTellerScript();
-    const tc = window.TellerConnect.setup({
-      applicationId: appId,
-      onSuccess: (enrollment) => enroll(enrollment.accessToken, enrollment.institution?.name),
-      onExit: () => {},
-    });
-    tc.open();
+    setConnectError(null);
+    if (!appId) {
+      setConnectError("Teller is not configured. Set TELLER_APP_ID on teller-banking-svc, then reload.");
+      return;
+    }
+    try {
+      setConnecting(true);
+      await loadTellerScript();
+      const tc = window.TellerConnect.setup({
+        applicationId: appId,
+        // environment is enforced server-side via TELLER_ENV; Connect picks it up from the app config
+        onSuccess: (enrollment) => {
+          enroll(enrollment.accessToken, enrollment.institution?.name);
+          setConnecting(false);
+        },
+        onExit: () => setConnecting(false),
+        onFailure: () => {
+          setConnectError("Bank connection failed or was cancelled.");
+          setConnecting(false);
+        },
+      });
+      tc.open();
+    } catch (e) {
+      setConnectError(String(e.message || e));
+      setConnecting(false);
+    }
+  };
+
+  // Reusable "+" add-account button used in the header and the accounts card.
+  const AddAccountButton = ({ variant = "chip" }) => {
+    const label = connecting ? "Connecting…" : (isReal ? "Add account" : "Connect bank");
+    if (variant === "icon") {
+      return (
+        <button
+          onClick={connectBank}
+          disabled={connecting}
+          title={appId ? "Add a bank account via Teller" : "Set TELLER_APP_ID to enable"}
+          className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors disabled:opacity-50"
+          aria-label="Add bank account"
+        >
+          <Plus size={15} strokeWidth={2.5} />
+        </button>
+      );
+    }
+    return (
+      <button
+        onClick={connectBank}
+        disabled={connecting}
+        title={appId ? "Add a bank account via Teller" : "Set TELLER_APP_ID to enable"}
+        className="inline-flex items-center gap-1 text-xs font-mono px-3 py-1 rounded-full bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors disabled:opacity-50"
+      >
+        <Plus size={13} strokeWidth={2.5} /> {label}
+      </button>
+    );
   };
 
   const { income, spending, netCashFlow, saveRate, incomeTransactions, spendingTransactions } = summarizeCashFlow(transactions);
@@ -44,17 +96,21 @@ export const Banking = () => {
         title="Banking & Spending"
         subtitle="Real bank accounts via Teller — auto-categorized"
         badge={
-          <>
+          <div className="flex items-center gap-2">
             {loading && <Tag variant="warning" dot>Loading</Tag>}
             {!loading && isReal && <Tag variant="accent" dot>LIVE — Teller</Tag>}
-            {!loading && !isReal && (
-              appId
-                ? <button onClick={connectBank} className="text-xs font-mono px-3 py-1 rounded-full bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors">+ Connect Bank</button>
-                : <Tag variant="warning">Demo Data</Tag>
-            )}
-          </>
+            {!loading && !isReal && !appId && <Tag variant="warning">Demo Data</Tag>}
+            {/* Always allow adding a bank (even when already live, to link more). */}
+            {!loading && <AddAccountButton variant="chip" />}
+          </div>
         }
       />
+
+      {connectError && (
+        <div className="px-4 py-2 rounded-lg bg-negative/10 border border-negative/30 text-negative text-xs font-mono animate-fade-in">
+          {connectError}
+        </div>
+      )}
 
       {/* Hero stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 animate-fade-in">
@@ -92,9 +148,12 @@ export const Banking = () => {
       <Card padded={false} className="animate-slide-up" style={{ animationDelay: "100ms" }}>
         <div className="px-6 py-4 border-b border-line flex justify-between items-center">
           <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">Connected Accounts</div>
-          <Tag variant="default">{fmtMoney(totalBalance)}</Tag>
+          <div className="flex items-center gap-2">
+            <Tag variant="default">{fmtMoney(totalBalance)}</Tag>
+            <AddAccountButton variant="icon" />
+          </div>
         </div>
-        <div className={cn("p-4 grid gap-3", accounts.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4")}>
+        <div className={cn("p-4 grid gap-3", accounts.length < 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4")}>
           {accounts.map((a, i) => (
             <div key={a.id || i} className="p-4 bg-canvas rounded-lg border-l-[3px] border-accent">
               <div className="flex justify-between items-start mb-2">
@@ -108,6 +167,16 @@ export const Banking = () => {
               )}
             </div>
           ))}
+
+          {/* Dashed "add account" tile — opens the Teller Connect popup */}
+          <button
+            onClick={connectBank}
+            disabled={connecting}
+            className="p-4 rounded-lg border-2 border-dashed border-line hover:border-accent/60 hover:bg-accent/5 transition-colors flex flex-col items-center justify-center gap-2 text-muted hover:text-accent min-h-[104px] disabled:opacity-50"
+          >
+            <Plus size={20} strokeWidth={2.5} />
+            <span className="text-xs font-mono">{connecting ? "Connecting…" : "Add account"}</span>
+          </button>
         </div>
       </Card>
 

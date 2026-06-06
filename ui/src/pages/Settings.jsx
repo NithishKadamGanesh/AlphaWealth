@@ -7,6 +7,12 @@ import { PageHeader } from "../components/ui/PageHeader";
 import { Button } from "../components/ui/Button";
 import { BrokerConnections } from "../components/BrokerConnections";
 import { cn } from "../lib/cn";
+import {
+  getDisplayName, setDisplayName,
+  getFireTarget,  setFireTarget,
+  getApiToken,    setApiToken,
+  DEFAULTS as PREF_DEFAULTS,
+} from "../lib/userPrefs";
 
 const AI_ADVISOR_URL = import.meta.env.VITE_AI_ADVISOR_URL || "http://localhost:8094";
 const SENTIMENT_URL  = import.meta.env.VITE_SENTIMENT_URL  || "http://localhost:8097";
@@ -25,7 +31,7 @@ const SERVICES = [
   { name: "backtest-svc",      port: 8089, type: "core", desc: "Strategy backtester" },
   { name: "model-svc",         port: 8090, type: "core", desc: "Python model server with C++ blending" },
   { name: "ibkr-sync-svc",     port: 8091, type: "core", desc: "Interactive Brokers gateway sync" },
-  { name: "plaid-banking-svc", port: 8092, type: "core", desc: "Real Plaid Chase integration" },
+  { name: "teller-banking-svc", port: 8092, type: "core", desc: "Real bank integration via Teller.io" },
   { name: "net-worth-svc",     port: 8093, type: "core", desc: "Net worth aggregator + history" },
   { name: "ai-advisor-svc",    port: 8094, type: "core", desc: "Multi-model LLM advisor" },
   { name: "alerts-svc",        port: 8095, type: "core", desc: "Resend email alerts" },
@@ -40,6 +46,13 @@ export const Settings = () => {
   const [healthMap, setHealthMap] = useState({});
   const [activeProvider, setActiveProvider] = useState(localStorage.getItem("alphawealth.provider") || null);
   const [gpuStatus, setGpuStatus] = useState({ sentiment: null, fingpt: null });
+  const [displayNameInput, setDisplayNameInput] = useState(() => {
+    const n = getDisplayName();
+    return n === PREF_DEFAULTS.displayName ? "" : n;
+  });
+  const [fireTargetInput, setFireTargetInput] = useState(() => String(getFireTarget()));
+  const [apiTokenInput, setApiTokenInput] = useState(() => getApiToken());
+  const [profileSaved, setProfileSaved] = useState(false);
 
   useEffect(() => {
     fetch(`${AI_ADVISOR_URL}/providers`)
@@ -76,6 +89,68 @@ export const Settings = () => {
   return (
     <div className="space-y-6 max-w-[1400px]">
       <PageHeader title="Settings & Connections" subtitle="LLM provider — service health — GPU status — integrations" />
+
+      {/* User Profile (display name + FIRE target) */}
+      <Card className="animate-fade-in">
+        <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-4 flex items-center gap-2">
+          <Icon name="user" size={11} color={T.muted} /> Profile
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <label className="block">
+            <div className="text-2xs text-zinc-500 font-mono mb-1">DISPLAY NAME</div>
+            <input
+              type="text"
+              value={displayNameInput}
+              onChange={(e) => { setDisplayNameInput(e.target.value); setProfileSaved(false); }}
+              placeholder="e.g. Alex"
+              className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent"
+            />
+            <div className="text-2xs text-zinc-500 mt-1">Used in the dashboard greeting & AI Advisor</div>
+          </label>
+          <label className="block">
+            <div className="text-2xs text-zinc-500 font-mono mb-1">FIRE TARGET ($)</div>
+            <input
+              type="number"
+              min="0"
+              step="10000"
+              value={fireTargetInput}
+              onChange={(e) => { setFireTargetInput(e.target.value); setProfileSaved(false); }}
+              className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent"
+            />
+            <div className="text-2xs text-zinc-500 mt-1">Net-worth goal driving the dashboard progress bar</div>
+          </label>
+          <label className="block sm:col-span-2">
+            <div className="text-2xs text-zinc-500 font-mono mb-1">API TOKEN</div>
+            <input
+              type="password"
+              autoComplete="off"
+              value={apiTokenInput}
+              onChange={(e) => { setApiTokenInput(e.target.value); setProfileSaved(false); }}
+              placeholder="Leave blank if services run without API_TOKEN"
+              className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent"
+            />
+            <div className="text-2xs text-zinc-500 mt-1">
+              Must match the <code>API_TOKEN</code> env set on the backend services. Sent as a bearer token on every request.
+            </div>
+          </label>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <Button
+            onClick={() => {
+              setDisplayName(displayNameInput.trim());
+              const n = Number(fireTargetInput);
+              if (Number.isFinite(n) && n > 0) setFireTarget(n);
+              setApiToken(apiTokenInput.trim());
+              setProfileSaved(true);
+              // Trigger a re-render of pages that read prefs at mount time.
+              window.dispatchEvent(new Event("storage"));
+            }}
+          >
+            Save profile
+          </Button>
+          {profileSaved && <Tag variant="positive" dot>Saved — reload other tabs to see changes</Tag>}
+        </div>
+      </Card>
 
       {/* Broker Integrations */}
       <div>

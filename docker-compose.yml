@@ -29,9 +29,7 @@ services:
     entrypoint: /bin/bash
     command: |
       -c "
-      rpk topic create orders.raw orders.valid orders.reject orders.updates trades.fills book.snapshots --brokers redpanda:9092 -p 3 -r 1;
-      rpk topic create market.ticks signals.cpp --brokers redpanda:9092 -p 3 -r 1;
-      rpk topic create ibkr.positions ibkr.account plaid.balances banking.transactions --brokers redpanda:9092 -p 3 -r 1;
+      rpk topic create ibkr.positions ibkr.account teller.balances banking.transactions --brokers redpanda:9092 -p 3 -r 1;
       rpk topic create net.worth.snapshots alerts.events sentiment.scores forecast.events --brokers redpanda:9092 -p 3 -r 1;
       echo 'All Kafka topics created'
       "
@@ -107,93 +105,6 @@ services:
     restart: "no"
 
   # ============================================================
-  # LEGACY TRADING (off by default - use --profile trading)
-  # The repo originated as a trading engine. These services are
-  # retained but disabled in the default monitoring-only profile.
-  # ============================================================
-  order-gateway:
-    build: { context: ., dockerfile: modules/order-gateway-svc/Dockerfile }
-    container_name: alphawealth-order-gateway
-    ports: ["8081:8081"]
-    environment: { KAFKA_BOOTSTRAP_SERVERS: redpanda:9092 }
-    depends_on: { redpanda-init: { condition: service_completed_successfully } }
-    profiles: ["trading"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8081/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-
-  risk-svc:
-    build: { context: ., dockerfile: modules/risk-svc/Dockerfile }
-    container_name: alphawealth-risk-svc
-    ports: ["8082:8082"]
-    environment: { KAFKA_BOOTSTRAP_SERVERS: redpanda:9092 }
-    depends_on: { redpanda-init: { condition: service_completed_successfully } }
-    profiles: ["trading"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8082/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-
-  match-engine:
-    build: { context: ., dockerfile: modules/match-engine-svc/Dockerfile }
-    container_name: alphawealth-match-engine
-    ports: ["8083:8083"]
-    environment: { KAFKA_BOOTSTRAP_SERVERS: redpanda:9092 }
-    depends_on: { redpanda-init: { condition: service_completed_successfully } }
-    profiles: ["trading"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8083/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-
-  portfolio-svc:
-    build: { context: ., dockerfile: modules/portfolio-svc/Dockerfile }
-    container_name: alphawealth-portfolio-svc
-    ports: ["8084:8084"]
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
-      DB_URL: jdbc:postgresql://postgres:5432/alphawealth
-      DB_USER: alphatrade
-      DB_PASS: alphatrade123
-    depends_on: { postgres: { condition: service_healthy } }
-    profiles: ["trading"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8084/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-
-  api-gateway:
-    build: { context: ., dockerfile: modules/api-gw-graphql/Dockerfile }
-    container_name: alphawealth-api-gateway
-    ports: ["8085:8085"]
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
-      DB_URL: jdbc:postgresql://postgres:5432/alphawealth
-      DB_USER: alphatrade
-      DB_PASS: alphatrade123
-    depends_on: { postgres: { condition: service_healthy } }
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1:8085/actuator/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-
-  # ============================================================
   # ANALYTICS & RESEARCH
   # ============================================================
   model-svc:
@@ -218,6 +129,8 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/alphawealth
       DB_USER: alphatrade
       DB_PASS: alphatrade123
+      API_TOKEN: ${API_TOKEN:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
     depends_on:
       postgres: { condition: service_healthy }
       live-data-svc: { condition: service_started }
@@ -236,6 +149,8 @@ services:
     environment:
       MARKETDATA_URL: http://live-data-svc:8096
       ANALYSIS_URL: http://analysis-svc:8088
+      API_TOKEN: ${API_TOKEN:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
     depends_on: { live-data-svc: { condition: service_started } }
     restart: unless-stopped
     healthcheck:
@@ -254,6 +169,7 @@ services:
       LIVE_DATA_URL: http://live-data-svc:8096
       FINBERT_MODEL: ProsusAI/finbert
       USE_CUDA: "auto"
+      API_TOKEN: ${API_TOKEN:-}
     depends_on: [live-data-svc]
     restart: unless-stopped
     # FinBERT downloads ~430MB model on first start; allow generous start_period
@@ -277,6 +193,7 @@ services:
       QUANTIZATION: "4bit"
       MAX_VRAM_GB: 6
       HF_TOKEN: ${HF_TOKEN:-}
+      API_TOKEN: ${API_TOKEN:-}
     volumes:
       - hf-cache:/root/.cache/huggingface
     depends_on: [live-data-svc, sentiment-svc]
@@ -296,6 +213,8 @@ services:
     build: { context: ./modules/live-data-svc, dockerfile: Dockerfile }
     container_name: alphawealth-live-data
     ports: ["8096:8096"]
+    environment:
+      API_TOKEN: ${API_TOKEN:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8096/health')\" >/dev/null 2>&1 || exit 1"]
@@ -320,6 +239,8 @@ services:
       IBKR_CP_GATEWAY_URL: ${IBKR_CP_GATEWAY_URL:-https://host.docker.internal:5001}
       IBKR_PUBLIC_LOGIN_URL: ${IBKR_PUBLIC_LOGIN_URL:-https://localhost:5001}
       IBKR_SNAPSHOT_PATH: /data/ibkr-snapshot.json
+      API_TOKEN: ${API_TOKEN:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
     depends_on:
       postgres: { condition: service_healthy }
       redpanda-init: { condition: service_completed_successfully }
@@ -331,9 +252,9 @@ services:
       retries: 3
       start_period: 60s
 
-  plaid-banking-svc:
-    build: { context: ., dockerfile: modules/plaid-banking-svc/Dockerfile }
-    container_name: alphawealth-plaid
+  teller-banking-svc:
+    build: { context: ., dockerfile: modules/teller-banking-svc/Dockerfile }
+    container_name: alphawealth-teller
     ports: ["8092:8092"]
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/alphawealth
@@ -341,7 +262,12 @@ services:
       DB_PASSWORD: alphatrade123
       KAFKA_BOOTSTRAP: redpanda:9092
       TELLER_APP_ID: ${TELLER_APP_ID:-}
+      TELLER_ENV: ${TELLER_ENV:-sandbox}
+      TELLER_CERT_PATH: ${TELLER_CERT_PATH:-/certs/certificate.pem}
+      TELLER_KEY_PATH: ${TELLER_KEY_PATH:-/certs/private_key.pem}
       TELLER_ENROLLMENTS_PATH: /data/teller-enrollments.json
+      API_TOKEN: ${API_TOKEN:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
     volumes:
       - ./secrets/teller:/certs:ro
       - banking_data:/data
@@ -365,6 +291,8 @@ services:
       DB_USER: alphatrade
       DB_PASSWORD: alphatrade123
       KAFKA_BOOTSTRAP: redpanda:9092
+      API_TOKEN: ${API_TOKEN:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
     depends_on:
       postgres: { condition: service_healthy }
       redpanda-init: { condition: service_completed_successfully }
@@ -389,12 +317,14 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct-q5_K_M}
       NET_WORTH_URL: http://net-worth-svc:8093
       IBKR_URL: http://ibkr-sync-svc:8091
-      PLAID_URL: http://plaid-banking-svc:8092
+      TELLER_URL: http://teller-banking-svc:8092
       ANALYSIS_URL: http://analysis-svc:8088
       SENTIMENT_URL: http://sentiment-svc:8097
       FINGPT_URL: http://fingpt-svc:8098
       LIVE_DATA_URL: http://live-data-svc:8096
       CPP_ENGINE_URL: http://cpp-signal-engine:9000
+      API_TOKEN: ${API_TOKEN:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
     depends_on:
       net-worth-svc: { condition: service_started }
       analysis-svc: { condition: service_started }
@@ -421,6 +351,8 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       ALERT_FROM_EMAIL: ${ALERT_FROM_EMAIL:-alerts@alphawealth.app}
       ALERT_TO_EMAIL: ${ALERT_TO_EMAIL:-}
+      API_TOKEN: ${API_TOKEN:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
     depends_on:
       postgres: { condition: service_healthy }
       redpanda-init: { condition: service_completed_successfully }
@@ -495,7 +427,7 @@ services:
       VITE_AI_ADVISOR_URL: http://localhost:8094
       VITE_NET_WORTH_URL:  http://localhost:8093
       VITE_IBKR_URL:       http://localhost:8091
-      VITE_PLAID_URL:      http://localhost:8092
+      VITE_TELLER_URL:     http://localhost:8092
       VITE_SENTIMENT_URL:  http://localhost:8097
       VITE_FINGPT_URL:     http://localhost:8098
       VITE_ALERTS_URL:     http://localhost:8095

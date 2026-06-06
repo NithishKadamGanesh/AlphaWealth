@@ -1,6 +1,6 @@
 // ui/src/lib/mockData.js
 // Mock data used until backend services are wired up
-// Replace these with API calls to net-worth-svc, ibkr-sync-svc, plaid-banking-svc
+// Replace these with API calls to net-worth-svc, ibkr-sync-svc, teller-banking-svc
 
 export const portfolioHoldings = [
   { ticker: "NVDA",  name: "NVIDIA",            shares: 12, price: 875.20, cost: 480, weight: 22.4, sector: "Tech", change: 2.75 },

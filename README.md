@@ -10,7 +10,7 @@ quick-start.
 
 ## What you get
 
-- **Net worth** aggregator pulling IBKR holdings + Plaid banking + manual entries
+- **Net worth** aggregator pulling IBKR holdings + Teller.io banking + manual entries
 - **Markets** page with real yfinance candles, support/resistance overlays,
   multi-timeframe convergence, pattern detection
 - **FinBERT** scoring every news headline (GPU, ~10ms per article)
@@ -22,6 +22,8 @@ quick-start.
   - `ollama` - Llama 3.1 8B Q5_K_M, local on your GPU (free, default)
 - **Backtester** for 7 built-in strategies
 - **Spending tracker**, **FIRE calculator**, **options analyzer**, **seasonality**
+- **Portfolio tools**: rebalancing planner, FIFO capital-gains, dividend projection
+- **Market regime** classification (BULL/BEAR/RANGING/HIGH_VOL) from the native C++ engine
 
 The UI is 12 pages of React. Every backend hook exposes a `dataMode` field
 (`live | stale | simulated | error`) and the `TickerTape` always shows the
@@ -65,20 +67,6 @@ start http://localhost:3000
 The first `/forecast/{symbol}` request triggers a one-time ~13GB FinGPT model
 download. Subsequent forecasts run in 3-15 seconds.
 
-## Default profile vs. trading profile
-
-```cmd
-REM Default: monitoring + AI only
-docker compose up -d
-
-REM With legacy trading services enabled
-docker compose --profile trading up -d
-```
-
-The trading services (`order-gateway`, `risk-svc`, `match-engine`,
-`portfolio-svc`) are preserved from the original alphatrade-engine project but
-are not part of the current product. See ARCHITECTURE.md for context.
-
 ## Optional integrations
 
 Add to `.env`:
@@ -86,12 +74,44 @@ Add to `.env`:
 | Feature              | Variable(s)                                  | Cost         |
 |----------------------|----------------------------------------------|--------------|
 | Real IBKR holdings   | `IBKR_CP_GATEWAY_URL` + run Client Portal gateway | Free with IB |
-| Real Chase via Plaid | `PLAID_CLIENT_ID`, `PLAID_SECRET`            | Free dev tier|
+| Real banks via Teller| `TELLER_APP_ID` + mTLS cert (dev/prod)       | Free tier    |
 | Claude advisor       | `ANTHROPIC_API_KEY=sk-ant-...`               | Paid usage   |
 | GPT-4 advisor        | `OPENAI_API_KEY=sk-...`                      | Paid usage   |
 | Gemini advisor       | `GEMINI_API_KEY=...`                         | Free tier    |
 | HuggingFace gated    | `HF_TOKEN=hf_...`                            | Free token   |
 | Email alerts         | `RESEND_API_KEY`, `ALERT_TO_EMAIL`           | Free 3000/mo |
+
+## Securing the API (recommended)
+
+By default every service is open on localhost. To require authentication, set a
+token in `.env`:
+
+```
+API_TOKEN=$(openssl rand -hex 32)   # any strong string
+CORS_ALLOW_ORIGIN=http://localhost:3000
+```
+
+When `API_TOKEN` is set, all Java and Python services reject requests that don't
+present `Authorization: Bearer <token>` (health and `/metrics` probes stay open).
+Paste the same token into the UI under **Settings → Profile → API Token**; the
+frontend then attaches it to every backend call automatically. Leave `API_TOKEN`
+blank for open local-dev access.
+
+## Metrics & dashboards
+
+- Java services expose Micrometer metrics at `/actuator/prometheus`.
+- Python services expose `/metrics` (request latency + custom counters:
+  quote cache hit/miss, FinBERT articles classified, FinGPT forecast latency).
+- Prometheus scrapes all of them; Grafana is at `http://localhost:3001`.
+
+## Tests & CI
+
+- Java: `mvn -pl modules/analysis-svc,modules/backtest-svc -am test`
+  (Black-Scholes/IV, backtest P&L, rebalancing, FIFO capital-gains, dividends).
+  **Requires JDK 21** — newer JDKs break Lombok annotation processing.
+- Python: `cd modules/live-data-svc && pip install -r requirements.txt pytest && pytest -q`
+- Frontend: `cd ui && npm ci && npm run build`
+- GitHub Actions (`.github/workflows/ci.yml`) runs all three on push/PR.
 
 ## Troubleshooting
 
@@ -119,8 +139,8 @@ honest with you - it's not real data.
 ## Project layout
 
 ```
-alphatrade-engine/
-  docker-compose.yml          14-service orchestration with GPU passthrough
+AlphaWealth/
+  docker-compose.yml          service orchestration with GPU passthrough
   ARCHITECTURE.md             canonical architecture doc (read this)
   .env.example                all configuration knobs
   README.md                   you are here
@@ -133,14 +153,9 @@ alphatrade-engine/
     sentiment-svc/            FinBERT GPU service (Python)
     fingpt-svc/               FinGPT-Forecaster GPU service (Python)
     ibkr-sync-svc/            IBKR integration (Java)
-    plaid-banking-svc/        Plaid integration (Java)
+    teller-banking-svc/       Teller.io banking integration (Java)
     net-worth-svc/            aggregator (Java)
     alerts-svc/               Resend email (Java)
-    order-gateway-svc/        legacy trading: order intake (Java)
-    risk-svc/                 legacy trading: risk checks (Java)
-    match-engine-svc/         legacy trading: matching simulator (Java)
-    portfolio-svc/            legacy trading: fills/positions (Java)
-    api-gw-graphql/           GraphQL gateway (Java)
   python-research/            research model server
   cpp-native/                 C++ technical signal engine
   infra/                      postgres init, prometheus, grafana provisioning

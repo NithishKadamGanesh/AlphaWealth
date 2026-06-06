@@ -5,3 +5,4 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 pandas==2.2.3
 pydantic==2.9.2
+prometheus-fastapi-instrumentator==7.0.0

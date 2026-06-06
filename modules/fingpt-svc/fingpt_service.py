@@ -44,6 +44,49 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="AlphaWealth FinGPT Service", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# ─── API token auth (opt-in: enforced only when API_TOKEN is set) ──
+from starlette.responses import JSONResponse
+API_TOKEN = os.getenv("API_TOKEN", "").strip()
+_AUTH_PUBLIC_PATHS = {"/", "/health", "/ready", "/metrics", "/docs", "/openapi.json", "/redoc"}
+if API_TOKEN:
+    log.info("API token auth ENABLED")
+else:
+    log.warning("API_TOKEN not set — auth DISABLED (open access).")
+
+
+@app.middleware("http")
+async def _token_auth(request, call_next):
+    if API_TOKEN and request.method != "OPTIONS" and request.url.path not in _AUTH_PUBLIC_PATHS:
+        auth = request.headers.get("authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-token", "")
+        if token != API_TOKEN:
+            origin = request.headers.get("origin", "*")
+            return JSONResponse(
+                status_code=401,
+                content={"error": "unauthorized", "detail": "missing or invalid API token"},
+                headers={"Access-Control-Allow-Origin": origin, "Vary": "Origin"},
+            )
+    return await call_next(request)
+
+
+# ─── Prometheus metrics (/metrics), guarded ───────────────────
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    from prometheus_client import Counter, Histogram
+
+    FORECASTS_TOTAL = Counter("fingpt_forecasts_total", "Total forecast requests served")
+    FORECAST_SECONDS = Histogram(
+        "fingpt_forecast_seconds",
+        "End-to-end forecast latency (s)",
+        buckets=(1, 2, 5, 10, 20, 30, 60, 120),
+    )
+
+    Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+    log.info("Prometheus metrics exposed at /metrics")
+except Exception as e:  # pragma: no cover
+    log.warning(f"Prometheus instrumentation unavailable: {e}")
+    FORECASTS_TOTAL = FORECAST_SECONDS = None
+
 executor = ThreadPoolExecutor(max_workers=2)
 
 LIVE_DATA_URL = os.getenv("LIVE_DATA_URL", "http://live-data-svc:8096")
@@ -61,76 +104,106 @@ if DEVICE.type == "cuda":
 
 # ─── Lazy loading: don't block startup ──────────────────────────
 
+import threading
+
 _model = None
 _tokenizer = None
 _load_error = None
 _loading = False
+_lora_loaded = False  # tracks whether the fine-tuned LoRA adapter is actually in use
+_lora_error = None    # short string if the LoRA load failed (visible in /health)
+_load_lock = threading.Lock()
+_load_ready_event = threading.Event()
+
+# Whether to warm the model up at boot. Defaults to False because cold-loading
+# blocks the FastAPI worker for several seconds, but operators who want a
+# predictable first-request latency can set FINGPT_WARMUP=1.
+WARMUP = os.getenv("FINGPT_WARMUP", "").lower() in ("1", "true", "yes")
 
 
 def _load_model():
     """Load model on first request (saves startup time, important for slow GPU initialization)."""
-    global _model, _tokenizer, _load_error, _loading
+    global _model, _tokenizer, _load_error, _loading, _lora_loaded, _lora_error
     if _model is not None or _load_error is not None:
         return
-    if _loading:
-        # Another thread is loading
-        while _loading:
-            import time
-            time.sleep(1)
-        return
-
-    _loading = True
-    try:
-        log.info(f"Loading FinGPT base model: {FINGPT_BASE}")
-        log.info(f"Quantization: {QUANT}")
-
-        _tokenizer = AutoTokenizer.from_pretrained(FINGPT_BASE, token=HF_TOKEN)
-        if _tokenizer.pad_token is None:
-            _tokenizer.pad_token = _tokenizer.eos_token
-
-        if QUANT == "4bit" and DEVICE.type == "cuda":
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True,
-            )
-            base_model = AutoModelForCausalLM.from_pretrained(
-                FINGPT_BASE,
-                quantization_config=bnb_config,
-                device_map="auto",
-                token=HF_TOKEN,
-                max_memory={0: f"{MAX_VRAM_GB}GiB"},
-            )
+    # Acquire the lock; if another thread is already loading we just wait
+    # for the ready-event instead of busy-spinning on time.sleep.
+    with _load_lock:
+        if _model is not None or _load_error is not None:
+            return
+        if _loading:
+            # Another thread crossed the threshold between our two checks; defer
+            # to its completion below.
+            pass
         else:
-            base_model = AutoModelForCausalLM.from_pretrained(
-                FINGPT_BASE,
-                torch_dtype=torch.float16 if DEVICE.type == "cuda" else torch.float32,
-                device_map="auto" if DEVICE.type == "cuda" else None,
-                token=HF_TOKEN,
-            )
+            _loading = True
 
-        # Apply FinGPT LoRA adapter if specified
-        if FINGPT_MODEL and "lora" in FINGPT_MODEL.lower():
-            try:
-                from peft import PeftModel
-                log.info(f"Applying LoRA adapter: {FINGPT_MODEL}")
-                _model = PeftModel.from_pretrained(base_model, FINGPT_MODEL, token=HF_TOKEN)
-            except Exception as e:
-                log.warning(f"LoRA adapter failed ({e}), using base model only")
+    if _loading and _model is None and _load_error is None:
+        try:
+            log.info(f"Loading FinGPT base model: {FINGPT_BASE}")
+            log.info(f"Quantization: {QUANT}")
+
+            _tokenizer = AutoTokenizer.from_pretrained(FINGPT_BASE, token=HF_TOKEN)
+            if _tokenizer.pad_token is None:
+                _tokenizer.pad_token = _tokenizer.eos_token
+
+            if QUANT == "4bit" and DEVICE.type == "cuda":
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    FINGPT_BASE,
+                    quantization_config=bnb_config,
+                    device_map="auto",
+                    token=HF_TOKEN,
+                    max_memory={0: f"{MAX_VRAM_GB}GiB"},
+                )
+            else:
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    FINGPT_BASE,
+                    torch_dtype=torch.float16 if DEVICE.type == "cuda" else torch.float32,
+                    device_map="auto" if DEVICE.type == "cuda" else None,
+                    token=HF_TOKEN,
+                )
+
+            # Apply FinGPT LoRA adapter if specified
+            if FINGPT_MODEL and "lora" in FINGPT_MODEL.lower():
+                try:
+                    from peft import PeftModel
+                    log.info(f"Applying LoRA adapter: {FINGPT_MODEL}")
+                    _model = PeftModel.from_pretrained(base_model, FINGPT_MODEL, token=HF_TOKEN)
+                    _lora_loaded = True
+                    log.info("✓ LoRA adapter active — forecasts use fine-tuned weights")
+                except Exception as e:
+                    _lora_error = str(e)
+                    log.warning(
+                        "LoRA adapter FAILED to load (%s). Falling back to base Llama-2; "
+                        "forecast quality WILL BE DEGRADED. Set HF_TOKEN if the adapter is gated.",
+                        e,
+                    )
+                    _model = base_model
+                    _lora_loaded = False
+            else:
                 _model = base_model
-        else:
-            _model = base_model
+                _lora_loaded = False
+                log.info("FINGPT_MODEL does not name a LoRA — using bare base model")
 
-        _model.eval()
-        log.info("✓ FinGPT loaded successfully")
-        if DEVICE.type == "cuda":
-            log.info(f"  VRAM used: {torch.cuda.memory_allocated(0)/1e9:.2f} GB")
-    except Exception as e:
-        log.error(f"Failed to load FinGPT: {e}", exc_info=True)
-        _load_error = str(e)
-    finally:
-        _loading = False
+            _model.eval()
+            log.info("✓ FinGPT loaded successfully (lora_loaded=%s)", _lora_loaded)
+            if DEVICE.type == "cuda":
+                log.info(f"  VRAM used: {torch.cuda.memory_allocated(0)/1e9:.2f} GB")
+        except Exception as e:
+            log.error(f"Failed to load FinGPT: {e}", exc_info=True)
+            _load_error = str(e)
+        finally:
+            _loading = False
+            _load_ready_event.set()
+    else:
+        # Wait for the in-flight loader, with a generous timeout so we never block forever.
+        _load_ready_event.wait(timeout=600)
 
 
 # ─── Forecasting prompt (FinGPT-Forecaster format) ──────────────
@@ -265,6 +338,8 @@ class TextInput(BaseModel):
 @app.get("/forecast/{symbol}")
 async def forecast(symbol: str):
     symbol = symbol.upper()
+    import time as _time
+    _t0 = _time.time()
     try:
         loop = asyncio.get_event_loop()
         # Build context (synchronous, fast)
@@ -274,6 +349,12 @@ async def forecast(symbol: str):
         # Run inference in thread pool (slow, blocks)
         text = await loop.run_in_executor(executor, generate, prompt)
         parsed = parse_forecast(text)
+        if FORECASTS_TOTAL is not None:
+            try:
+                FORECASTS_TOTAL.inc()
+                FORECAST_SECONDS.observe(_time.time() - _t0)
+            except Exception:
+                pass
 
         return {
             "symbol": symbol,
@@ -282,6 +363,8 @@ async def forecast(symbol: str):
             "analysis": text,
             "context_chars": len(ctx),
             "model": FINGPT_MODEL,
+            "lora_loaded": _lora_loaded,
+            "lora_error": _lora_error,
             "computed_at": datetime.now().isoformat(),
         }
     except Exception as e:
@@ -310,6 +393,9 @@ def health():
         "base": FINGPT_BASE,
         "device": str(DEVICE),
         "model_loaded": _model is not None,
+        "model_loading": _loading,
+        "lora_loaded": _lora_loaded,
+        "lora_error": _lora_error,
         "load_error": _load_error,
     }
     if DEVICE.type == "cuda":
@@ -317,6 +403,39 @@ def health():
         info["vram_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1)
         info["vram_used_mb"] = round(torch.cuda.memory_allocated(0) / 1e6, 1)
     return info
+
+
+@app.get("/ready")
+def ready():
+    """Kubernetes/Compose-style readiness probe.
+
+    Returns 200 only once the model is fully loaded and ready to serve a
+    forecast request. Use this instead of /health when you want a strict
+    "is the first request going to be fast?" check.
+    """
+    if _load_error:
+        raise HTTPException(503, f"FinGPT load failed: {_load_error}")
+    if _model is None:
+        raise HTTPException(503, "FinGPT still loading" if _loading else "FinGPT not loaded yet")
+    return {
+        "ready": True,
+        "model_loaded": True,
+        "lora_loaded": _lora_loaded,
+        "lora_warning": ("Forecasts use base Llama-2 (LoRA failed): " + _lora_error)
+                        if _lora_error else None,
+    }
+
+
+@app.on_event("startup")
+def _maybe_warmup():
+    """If FINGPT_WARMUP is set, kick off model loading in a background thread
+    so the first /forecast request hits a warm model. The HTTP server still
+    starts immediately — readiness is reported separately via /ready."""
+    if WARMUP:
+        log.info("FINGPT_WARMUP=1 — preloading model in background thread")
+        threading.Thread(target=_load_model, name="fingpt-warmup", daemon=True).start()
+    else:
+        log.info("Lazy loading enabled — model will load on first /forecast call")
 
 
 @app.get("/")

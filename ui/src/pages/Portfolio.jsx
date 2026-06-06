@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip
 } from "recharts";
-import { Briefcase } from "lucide-react";
+import { Briefcase, Plus } from "lucide-react";
 import { T } from "../lib/tokens";
 import { Icon } from "../components/Icon";
 import { Card } from "../components/ui/Card";
@@ -16,6 +16,7 @@ import { cn, fmtMoney, fmtPct } from "../lib/cn";
 import { useIbkrPositions } from "../hooks/useIbkrPositions";
 
 const ANALYSIS_URL = import.meta.env.VITE_ANALYSIS_URL || "http://localhost:8088";
+const IBKR_URL = import.meta.env.VITE_IBKR_URL || "http://localhost:8091";
 
 const formatLastSync = (ts) => {
   if (!ts) return "never";
@@ -31,6 +32,52 @@ export const Portfolio = () => {
   const { positions, summary, status, dataMode, isReal, loading, lastError, refresh } = useIbkrPositions();
   const [optimization, setOptimization] = useState(null);
   const [optimizing, setOptimizing] = useState(false);
+
+  // ── IBKR connect flow (mirrors Settings → Broker Connections) ──
+  // IBKR has no JS popup SDK; "connecting" means opening the local Client Portal
+  // gateway login in a new window. When the user closes it, we force a sync.
+  const loginWindowRef = useRef(null);
+  const [loginFlowActive, setLoginFlowActive] = useState(false);
+  const ibkrLoginUrl = status?.loginUrl || "https://localhost:5001";
+
+  const connectIbkr = () => {
+    loginWindowRef.current = window.open(ibkrLoginUrl, "ibkr-login", "noopener,noreferrer");
+    setLoginFlowActive(Boolean(loginWindowRef.current));
+  };
+
+  useEffect(() => {
+    if (!loginFlowActive) return;
+    const timer = setInterval(() => {
+      if (!loginWindowRef.current || loginWindowRef.current.closed) {
+        loginWindowRef.current = null;
+        setLoginFlowActive(false);
+        // User finished logging in → kick a sync, then refresh status/positions.
+        fetch(`${IBKR_URL}/ibkr/sync`, { method: "POST", signal: AbortSignal.timeout(20_000) })
+          .catch(() => {})
+          .finally(() => refresh());
+      }
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [loginFlowActive, refresh]);
+
+  const IbkrConnectButton = ({ block = false }) => {
+    const label = loginFlowActive
+      ? "Waiting for login…"
+      : isReal ? "Add / re-auth" : "Connect IBKR";
+    return (
+      <button
+        onClick={connectIbkr}
+        disabled={loginFlowActive}
+        title="Open the IBKR Client Portal gateway login"
+        className={cn(
+          "inline-flex items-center gap-1 font-mono rounded-full bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors disabled:opacity-50",
+          block ? "px-4 py-2 text-sm" : "px-3 py-1 text-xs",
+        )}
+      >
+        <Plus size={block ? 15 : 13} strokeWidth={2.5} /> {label} ↗
+      </button>
+    );
+  };
 
   const investedValue = positions.reduce((s, h) => s + (h.marketValue || h.shares * h.price), 0);
   const totalCost = positions.reduce((s, h) => s + h.shares * h.cost, 0);
@@ -121,7 +168,7 @@ export const Portfolio = () => {
     if (dataMode === "disconnected") {
       return {
         title: "Connect IBKR to load holdings",
-        description: "Open Settings → Broker Connections, sign in through the Client Portal gateway, then run a sync.",
+        description: "Click “Connect IBKR” above to sign in through the Client Portal gateway. Positions sync automatically once you're authenticated.",
       };
     }
     return {
@@ -136,10 +183,12 @@ export const Portfolio = () => {
         title="Portfolio Analyzer"
         subtitle="Backend-owned IBKR snapshots — Correlation matrix — Risk-parity sizing"
         badge={
-          <>
+          <div className="flex items-center gap-2">
             {connectionBadge}
             <Tag variant="accent">ANALYSIS-SVC</Tag>
-          </>
+            {/* Always available — connect, or re-auth/add another account when live. */}
+            {!loading && <IbkrConnectButton />}
+          </div>
         }
       />
 
@@ -163,12 +212,15 @@ export const Portfolio = () => {
                 <div className="text-2xs text-subtle font-mono mt-2">{lastError}</div>
               )}
             </div>
-            <button
-              onClick={refresh}
-              className="text-xs text-muted hover:text-ink transition-colors font-mono"
-            >
-              Refresh status
-            </button>
+            <div className="flex items-center gap-3 shrink-0">
+              {(dataMode === "disconnected" || dataMode === "stale") && <IbkrConnectButton />}
+              <button
+                onClick={refresh}
+                className="text-xs text-muted hover:text-ink transition-colors font-mono"
+              >
+                Refresh status
+              </button>
+            </div>
           </div>
         </Card>
       )}

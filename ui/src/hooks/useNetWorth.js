@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const NET_WORTH_URL = import.meta.env.VITE_NET_WORTH_URL || "http://localhost:8093";
-const BANKING_URL = import.meta.env.VITE_PLAID_URL || "http://localhost:8092";
+const BANKING_URL = import.meta.env.VITE_TELLER_URL || "http://localhost:8092";
 const IBKR_URL = import.meta.env.VITE_IBKR_URL || "http://localhost:8091";
 const TIMEOUT_MS = 4000;
 

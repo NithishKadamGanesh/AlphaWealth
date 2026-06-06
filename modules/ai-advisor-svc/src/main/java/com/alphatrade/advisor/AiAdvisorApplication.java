@@ -23,7 +23,7 @@ import java.util.*;
  * RAG context sources:
  *   - net-worth-svc          : net worth + asset breakdown
  *   - ibkr-sync-svc          : real IBKR positions
- *   - plaid-banking-svc      : last 30d Plaid transactions
+ *   - teller-banking-svc     : last 30d Teller (bank) transactions
  *   - analysis-svc           : technical signal + multi-timeframe + patterns
  *   - sentiment-svc          : FinBERT news sentiment per symbol
  *   - fingpt-svc             : FinGPT-Forecaster (opt-in, slow)
@@ -74,7 +74,7 @@ class AdvisorController {
 
     @Value("${services.net-worth:http://net-worth-svc:8093}")  private String netWorthUrl;
     @Value("${services.ibkr:http://ibkr-sync-svc:8091}")       private String ibkrUrl;
-    @Value("${services.plaid:http://plaid-banking-svc:8092}")  private String plaidUrl;
+    @Value("${services.teller:http://teller-banking-svc:8092}")  private String tellerUrl;
     @Value("${services.analysis:http://analysis-svc:8088}")    private String analysisUrl;
     @Value("${services.sentiment:http://sentiment-svc:8097}")  private String sentimentUrl;
     @Value("${services.fingpt:http://fingpt-svc:8098}")        private String fingptUrl;
@@ -205,12 +205,21 @@ class AdvisorController {
                 r.path("snapshot").path("trend_score").asDouble()
             );
         } catch (Exception e) {
+            // Stays at debug — the C++ engine is optional and may legitimately be offline.
             log.debug("Regime fetch for {} failed: {}", symbol, e.getMessage());
             return null;
         }
     }
 
     // ─── Context building ─────────────────────────────────
+
+    /**
+     * Soft cap on the RAG context length, measured in characters. The Anthropic / OpenAI
+     * APIs all accept much larger inputs, but a 32K-char ceiling keeps us well under any
+     * provider's context window (~8K tokens at the conservative 4 chars/token estimate)
+     * and prevents an ever-growing watchlist from silently inflating cost & latency.
+     */
+    static final int MAX_CONTEXT_CHARS = 32_000;
 
     /** Package-private so it can be exercised by integration tests. */
     String buildContext(List<String> watchSymbols, boolean includeForecast) {
@@ -228,22 +237,34 @@ class AdvisorController {
                    .append(" / Investments: $").append(nw.path("investments").asText())
                    .append(" / Property: $").append(nw.path("property").asText())
                    .append(" / Retirement: $").append(nw.path("retirement").asText()).append("\n\n");
+            } else {
+                log.warn("AI Advisor context: net-worth-svc returned no data (url={})", netWorthUrl);
             }
-        } catch (Exception e) { log.debug("Net worth context failed: {}", e.getMessage()); }
+        } catch (Exception e) { log.warn("Net worth context failed: {}", e.getMessage()); }
 
         try {
             JsonNode positions = fetchJson(ibkrUrl + "/ibkr/positions");
             if (positions != null && positions.isArray() && positions.size() > 0) {
                 ctx.append("## Investment Holdings (IBKR Live)\n");
-                positions.forEach(p -> ctx.append("- ").append(p.path("symbol").asText())
-                        .append(": ").append(p.path("position").asText()).append(" shares")
-                        .append(" @ $").append(p.path("avgCost").asText()).append("\n"));
+                // Cap positions to top 25 to keep context bounded
+                int max = Math.min(positions.size(), 25);
+                for (int i = 0; i < max; i++) {
+                    JsonNode p = positions.get(i);
+                    ctx.append("- ").append(p.path("symbol").asText())
+                       .append(": ").append(p.path("position").asText()).append(" shares")
+                       .append(" @ $").append(p.path("avgCost").asText()).append("\n");
+                }
+                if (positions.size() > max) {
+                    ctx.append("- … and ").append(positions.size() - max).append(" more positions\n");
+                }
                 ctx.append("\n");
+            } else {
+                log.warn("AI Advisor context: ibkr-sync-svc returned no positions (url={})", ibkrUrl);
             }
-        } catch (Exception e) { log.debug("IBKR context failed: {}", e.getMessage()); }
+        } catch (Exception e) { log.warn("IBKR context failed: {}", e.getMessage()); }
 
         try {
-            JsonNode txs = fetchJson(plaidUrl + "/plaid/transactions?days=30");
+            JsonNode txs = fetchJson(tellerUrl + "/banking/transactions?days=30");
             if (txs != null && txs.isArray() && txs.size() > 0) {
                 ctx.append("## Recent Spending (last 30 days)\n");
                 Map<String, Double> byCategory = new HashMap<>();
@@ -260,11 +281,23 @@ class AdvisorController {
                         .forEach(e -> ctx.append("- ").append(e.getKey())
                                 .append(": $").append(String.format("%.2f", e.getValue())).append("\n"));
                 ctx.append("\n");
+            } else {
+                log.info("AI Advisor context: teller-banking-svc returned no transactions (likely no enrollment yet)");
             }
-        } catch (Exception e) { log.debug("Transactions context failed: {}", e.getMessage()); }
+        } catch (Exception e) { log.warn("Transactions context failed: {}", e.getMessage()); }
 
         ctx.append("## Technical & Sentiment Analysis\n");
+        int symbolsIncluded = 0;
         for (String sym : watchSymbols) {
+            // Token budget: bail out before we breach the cap.
+            if (ctx.length() >= MAX_CONTEXT_CHARS) {
+                int remaining = watchSymbols.size() - symbolsIncluded;
+                ctx.append("\n_…").append(remaining).append(" more watchlist symbols omitted to stay within context budget._\n");
+                log.warn("AI Advisor context truncated: hit {} char budget after {} of {} symbols",
+                        MAX_CONTEXT_CHARS, symbolsIncluded, watchSymbols.size());
+                break;
+            }
+            symbolsIncluded++;
             try {
                 JsonNode signal = fetchJson(analysisUrl + "/api/analysis/" + sym + "/signal");
                 JsonNode mtf    = fetchJson(analysisUrl + "/api/analysis/" + sym + "/multitimeframe");
@@ -317,7 +350,7 @@ class AdvisorController {
                 }
                 ctx.append("\n");
             } catch (Exception e) {
-                log.debug("Analysis context for {} failed: {}", sym, e.getMessage());
+                log.warn("Analysis context for {} failed: {}", sym, e.getMessage());
             }
         }
 

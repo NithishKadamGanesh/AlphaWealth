@@ -1,5 +1,7 @@
 package com.alphatrade.analysis.options;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import java.util.*;
 
@@ -14,6 +16,15 @@ import java.util.*;
  */
 @Component
 public class OptionsEngine {
+
+    private static final Logger log = LoggerFactory.getLogger(OptionsEngine.class);
+
+    // Tunable bounds for the Newton-Raphson / bisection implied-vol solver.
+    private static final int    IV_MAX_NEWTON_ITERATIONS  = 50;
+    private static final int    IV_MAX_BISECTION_ITERATIONS = 100;
+    private static final double IV_PRICE_TOLERANCE        = 1e-4;
+    private static final double IV_VOL_MIN                = 0.005; // 0.5% — Newton clamp floor
+    private static final double IV_VOL_MAX                = 5.0;   // 500% — practical ceiling
 
     public record OptionPrice(String type, double strike, double expDays, double spot,
                                double vol, double rate, double price, double intrinsic,
@@ -82,35 +93,78 @@ public class OptionsEngine {
 
     /**
      * Calculate implied volatility from market price.
-     * Uses Newton-Raphson iteration.
+     *
+     * Uses Newton-Raphson with a strict iteration cap and falls back to bisection
+     * if the iteration diverges (vega collapses near zero, or oscillation). Both
+     * solvers are bounded; this method is guaranteed to return in O(1) time.
+     *
+     * Returns 0 for invalid inputs or when both solvers fail to converge — the
+     * caller can detect convergence failure by checking for 0.
      */
     public double impliedVolatility(String type, double marketPrice, double spot,
                                      double strike, double days, double rate) {
         double t = days / 365.0;
-        if (t <= 0 || marketPrice <= 0) return 0;
+        if (t <= 0 || marketPrice <= 0 || spot <= 0 || strike <= 0) return 0;
 
-        double vol = 0.25; // initial guess
-        for (int i = 0; i < 100; i++) {
+        // Pricing function for a given vol — used by both solvers.
+        java.util.function.DoubleUnaryOperator priceAt = (vol) -> {
             double d1 = d1(spot, strike, t, vol, rate);
             double d2 = d2(d1, vol, t);
-
-            double bsPrice;
             if ("CALL".equalsIgnoreCase(type)) {
-                bsPrice = spot * cdf(d1) - strike * Math.exp(-rate * t) * cdf(d2);
-            } else {
-                bsPrice = strike * Math.exp(-rate * t) * cdf(-d2) - spot * cdf(-d1);
+                return spot * cdf(d1) - strike * Math.exp(-rate * t) * cdf(d2);
             }
+            return strike * Math.exp(-rate * t) * cdf(-d2) - spot * cdf(-d1);
+        };
+
+        // ── Newton-Raphson (fast when it works) ───────────────────────
+        double vol = 0.25;
+        for (int i = 0; i < IV_MAX_NEWTON_ITERATIONS; i++) {
+            double d1 = d1(spot, strike, t, vol, rate);
+            double bsPrice = priceAt.applyAsDouble(vol);
 
             double vega = spot * pdf(d1) * Math.sqrt(t);
-            if (Math.abs(vega) < 1e-10) break;
+            if (!Double.isFinite(vega) || Math.abs(vega) < 1e-10) break;
 
             double diff = bsPrice - marketPrice;
-            if (Math.abs(diff) < 0.001) break;
+            if (Math.abs(diff) < IV_PRICE_TOLERANCE) {
+                return r4(vol);
+            }
 
-            vol -= diff / vega;
-            vol = Math.max(0.01, Math.min(vol, 5.0)); // clamp
+            double step = diff / vega;
+            if (!Double.isFinite(step)) break;
+            vol -= step;
+            if (!Double.isFinite(vol)) break;
+            vol = Math.max(IV_VOL_MIN, Math.min(vol, IV_VOL_MAX));
         }
-        return r4(vol);
+
+        // ── Bisection fallback — slower but always converges if a root exists ─
+        double lo = IV_VOL_MIN, hi = IV_VOL_MAX;
+        double pLo = priceAt.applyAsDouble(lo) - marketPrice;
+        double pHi = priceAt.applyAsDouble(hi) - marketPrice;
+        if (Double.isNaN(pLo) || Double.isNaN(pHi) || pLo * pHi > 0) {
+            // No sign change in [lo,hi] — no root reachable. Likely an arbitrage
+            // violation or an expired option; return 0 and warn so the caller knows.
+            log.warn("Implied vol failed to bracket root for {} K={} S={} T={}d mktPx={}",
+                    type, strike, spot, days, marketPrice);
+            return 0;
+        }
+        for (int i = 0; i < IV_MAX_BISECTION_ITERATIONS; i++) {
+            double mid = 0.5 * (lo + hi);
+            double pMid = priceAt.applyAsDouble(mid) - marketPrice;
+            if (Math.abs(pMid) < IV_PRICE_TOLERANCE || (hi - lo) < 1e-6) {
+                return r4(mid);
+            }
+            if (pLo * pMid <= 0) {
+                hi = mid;
+                pHi = pMid;
+            } else {
+                lo = mid;
+                pLo = pMid;
+            }
+        }
+        log.warn("Implied vol bisection did not converge to {} tolerance after {} iters: {} {} K={} mktPx={}",
+                IV_PRICE_TOLERANCE, IV_MAX_BISECTION_ITERATIONS, type, strike, spot, marketPrice);
+        return r4(0.5 * (lo + hi));
     }
 
     // ═══════════════════════════════════════════════════════════════

@@ -1,6 +1,7 @@
 package com.alphatrade.analysis.controller;
 
 import com.alphatrade.analysis.alert.AlertEngine;
+import com.alphatrade.analysis.finance.FinanceEngine;
 import com.alphatrade.analysis.options.OptionsEngine;
 import com.alphatrade.analysis.indicator.IndicatorEngine;
 import com.alphatrade.analysis.indicator.SupportResistanceDetector;
@@ -50,8 +51,10 @@ public class AnalysisController {
     private final AlertEngine alertEngine;
     private final PortfolioOptimizer portfolioOptimizer;
     private final OptionsEngine optionsEngine;
+    private final FinanceEngine financeEngine;
     private final HttpClient httpClient;
     private final String marketDataUrl;
+    private final String cppEngineUrl;
 
     // ── Candle cache (symbol → (timestamp, candles)) ────────────
     private final ConcurrentHashMap<String, CacheEntry> candleCache = new ConcurrentHashMap<>();
@@ -61,14 +64,17 @@ public class AnalysisController {
 
     public AnalysisController(IndicatorEngine ie, PatternDetector pd, SupportResistanceDetector sr,
             SeasonalityEngine se, SignalGenerator sg, AlertEngine ae, PortfolioOptimizer po,
-            OptionsEngine oe,
-            @Value("${marketdata.url:http://localhost:8087}") String mdUrl) {
+            OptionsEngine oe, FinanceEngine fe,
+            @Value("${marketdata.url:http://localhost:8087}") String mdUrl,
+            @Value("${services.cpp-engine:http://cpp-signal-engine:9000}") String cppUrl) {
         this.indicatorEngine = ie; this.patternDetector = pd; this.srDetector = sr;
         this.seasonalityEngine = se; this.signalGenerator = sg; this.alertEngine = ae;
         this.portfolioOptimizer = po;
         this.optionsEngine = oe;
+        this.financeEngine = fe;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
         this.marketDataUrl = mdUrl;
+        this.cppEngineUrl = cppUrl;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -222,6 +228,74 @@ public class AnalysisController {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // MARKET REGIME (C++ native engine proxy)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Classify market regime (BULL_TREND / BEAR_TREND / RANGING / HIGH_VOL) for a symbol
+     * by sending recent closes to the C++ technical-signal-engine. Returns
+     * {@code {regime, direction, confidence, snapshot, available: true}} when the engine
+     * answers, or {@code {available: false, reason: ...}} when it's offline so the UI can
+     * degrade gracefully instead of showing a broken widget.
+     */
+    @GetMapping("/{symbol}/regime")
+    public ResponseEntity<?> regime(@PathVariable String symbol) {
+        List<Candle> c = getCachedCandles(symbol);
+        if (c.isEmpty()) return noData(symbol);
+        if (c.size() < 25) {
+            return ResponseEntity.ok(Map.of(
+                    "available", false,
+                    "reason", "need at least 25 candles for regime classification (got " + c.size() + ")"
+            ));
+        }
+        try {
+            // Build JSON payload of close prices
+            StringBuilder closes = new StringBuilder("[");
+            for (int i = 0; i < c.size(); i++) {
+                if (i > 0) closes.append(",");
+                closes.append(c.get(i).close());
+            }
+            closes.append("]");
+            String body = "{\"closes\":" + closes + "}";
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(cppEngineUrl + "/regime"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(3))
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (res.statusCode() != 200) {
+                return ResponseEntity.ok(Map.of(
+                        "available", false,
+                        "reason", "cpp-engine returned HTTP " + res.statusCode()
+                ));
+            }
+            JsonNode tree = mapper.readTree(res.body());
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("available", true);
+            out.put("symbol", symbol.toUpperCase());
+            out.put("regime", tree.path("regime").asText("UNKNOWN"));
+            out.put("direction", tree.path("direction").asText("UNKNOWN"));
+            out.put("confidence", tree.path("confidence").asDouble(0.0));
+            out.put("snapshot", mapper.convertValue(tree.path("snapshot"), Map.class));
+            out.put("source", "cpp-signal-engine");
+            return ResponseEntity.ok(out);
+        } catch (java.net.ConnectException ce) {
+            return ResponseEntity.ok(Map.of(
+                    "available", false,
+                    "reason", "cpp-signal-engine offline (start it for regime classification)"
+            ));
+        } catch (Exception e) {
+            log.warn("Regime classification for {} failed: {}", symbol, e.getMessage());
+            return ResponseEntity.ok(Map.of(
+                    "available", false,
+                    "reason", "engine error: " + e.getMessage()
+            ));
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // NEW: PORTFOLIO OPTIMIZATION
     // ═══════════════════════════════════════════════════════════════
 
@@ -236,6 +310,74 @@ public class AnalysisController {
         }
         if (data.size() < 2) return ResponseEntity.badRequest().body(Map.of("error", "Need at least 2 symbols with data"));
         return ResponseEntity.ok(portfolioOptimizer.optimize(data));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // FINANCE: REBALANCING / CAPITAL GAINS / DIVIDENDS
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Rebalancing plan. Body:
+     *   { "current": {"AAPL": 12000, "VOO": 8000}, "target": {"AAPL": 0.4, "VOO": 0.6},
+     *     "cashToAdd": 0, "bandPct": 5 }
+     */
+    @PostMapping("/portfolio/rebalance")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<?> rebalance(@RequestBody Map<String, Object> body) {
+        Map<String, Double> current = toDoubleMap((Map<String, Object>) body.getOrDefault("current", Map.of()));
+        Map<String, Double> target  = toDoubleMap((Map<String, Object>) body.getOrDefault("target", Map.of()));
+        if (target.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "target weights required"));
+        }
+        double cash = dbl(body, "cashToAdd", 0);
+        double band = dbl(body, "bandPct", 0);
+        return ResponseEntity.ok(financeEngine.rebalance(current, target, cash, band));
+    }
+
+    /**
+     * Realized capital gains (FIFO). Body:
+     *   { "symbol": "AAPL", "sellQty": 50, "salePrice": 190, "saleDate": "2026-01-15",
+     *     "lots": [ {"acquired":"2023-02-01","qty":30,"costPerShare":140}, ... ] }
+     */
+    @PostMapping("/tax/capital-gains")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<?> capitalGains(@RequestBody Map<String, Object> body) {
+        String symbol = String.valueOf(body.getOrDefault("symbol", "UNKNOWN")).toUpperCase();
+        double sellQty = dbl(body, "sellQty", 0);
+        double salePrice = dbl(body, "salePrice", 0);
+        String saleDate = (String) body.get("saleDate");
+        List<Map<String, Object>> rawLots = (List<Map<String, Object>>) body.getOrDefault("lots", List.of());
+        if (sellQty <= 0 || salePrice <= 0 || rawLots.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "sellQty, salePrice and non-empty lots required"));
+        }
+        List<FinanceEngine.TaxLot> lots = rawLots.stream().map(l -> new FinanceEngine.TaxLot(
+                (String) l.get("acquired"), dbl(l, "qty", 0), dbl(l, "costPerShare", 0))).toList();
+        return ResponseEntity.ok(financeEngine.capitalGains(symbol, lots, sellQty, salePrice, saleDate));
+    }
+
+    /**
+     * Dividend income projection. Body:
+     *   { "holdings": [ {"symbol":"VOO","shares":40,"annualDividendPerShare":6.2,"price":510}, ... ] }
+     */
+    @PostMapping("/dividends/projection")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<?> dividendProjection(@RequestBody Map<String, Object> body) {
+        List<Map<String, Object>> raw = (List<Map<String, Object>>) body.getOrDefault("holdings", List.of());
+        if (raw.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "holdings required"));
+        }
+        List<FinanceEngine.DividendHolding> holdings = raw.stream().map(h -> new FinanceEngine.DividendHolding(
+                String.valueOf(h.getOrDefault("symbol", "?")).toUpperCase(),
+                dbl(h, "shares", 0), dbl(h, "annualDividendPerShare", 0), dbl(h, "price", 0))).toList();
+        return ResponseEntity.ok(financeEngine.dividendProjection(holdings));
+    }
+
+    private Map<String, Double> toDoubleMap(Map<String, Object> in) {
+        Map<String, Double> out = new LinkedHashMap<>();
+        for (var e : in.entrySet()) {
+            if (e.getValue() instanceof Number n) out.put(e.getKey().toUpperCase(), n.doubleValue());
+        }
+        return out;
     }
 
     // ═══════════════════════════════════════════════════════════════

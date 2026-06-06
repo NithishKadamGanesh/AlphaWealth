@@ -2,6 +2,7 @@ import { useState, useEffect, createContext, useContext, useCallback } from "rea
 import { Sidebar } from "./components/Sidebar";
 import { TickerTape } from "./components/TickerTape";
 import { CommandPalette } from "./components/CommandPalette";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastProvider, useToast } from "./components/ui/Toast";
 import { Dashboard } from "./pages/Dashboard";
 import { NetWorth } from "./pages/NetWorth";
@@ -85,9 +86,13 @@ function AppShell() {
           onMenuToggle={() => setSidebarOpen(o => !o)}
         />
         <main className="flex-1 px-4 sm:px-6 lg:px-9 py-6 lg:py-8 pb-12">
-          <div className="animate-fade-in" key={page}>
-            {pages[page]}
-          </div>
+          {/* Page-level error boundary: keyed by page so the boundary resets
+              when the user navigates away from a broken page. */}
+          <ErrorBoundary key={page}>
+            <div className="animate-fade-in">
+              {pages[page]}
+            </div>
+          </ErrorBoundary>
         </main>
       </div>
 
@@ -102,8 +107,10 @@ function AppShell() {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <AppShell />
-    </ToastProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <AppShell />
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }

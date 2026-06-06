@@ -20,17 +20,15 @@ trades**. Its purpose is to give one user (the operator) a unified view of:
 
 The frontend is a 12-page React app served at port 3000.
 
-## Lineage: the trading-engine layer
+## Lineage
 
-This repo originated as `alphatrade-engine`, a trading-simulator MVP with an
-order-gateway, risk service, matching engine, portfolio service, and GraphQL
-API. Those services still exist in the codebase and still build, but they are
-**disabled by default** and gated behind `docker compose --profile trading`.
-
-Treat them as a preserved capability, not part of the headline product. The
-project pivoted toward personal-finance / advisory tooling. Trading-execution
-work would resume by re-enabling the profile and replacing the simulated
-match-engine with a real broker connector (most likely IBKR FIX or REST).
+This repo originated as `alphatrade-engine`, a trading-simulator MVP
+(order-gateway, risk service, matching engine, portfolio service, and a
+GraphQL API). The project pivoted to personal-finance / advisory tooling, and
+those legacy trading services have since been **removed** — the codebase is now
+focused solely on the AlphaWealth monitoring/advisory product. If trading
+execution is ever revived, it would be built fresh against a real broker
+connector (e.g. IBKR FIX or REST) rather than the old simulator.
 
 ## Current platform layers
 
@@ -47,7 +45,7 @@ match-engine with a real broker connector (most likely IBKR FIX or REST).
 - `net-worth-svc` (8093, Java): aggregates account balances and computes net
   worth snapshots
 - `ibkr-sync-svc` (8091, Java): pulls IBKR positions via the Client Portal Web API
-- `plaid-banking-svc` (8092, Java): pulls Chase / banking transactions via Plaid
+- `teller-banking-svc` (8092, Java): pulls bank accounts / transactions via Teller.io (mTLS)
 - `alerts-svc` (8095, Java): email alerts via Resend
 
 ### Market and analytics services
@@ -69,23 +67,16 @@ match-engine with a real broker connector (most likely IBKR FIX or REST).
 - `ollama` (11434): Llama 3.1 8B Q5_K_M chat model, ~5.7GB VRAM, auto-swaps
   with FinGPT when needed (8GB cannot hold both at once)
 - `ai-advisor-svc` (8094, Java): multi-provider router (Claude / OpenAI /
-  Gemini / Ollama). Builds RAG context from net-worth + IBKR + Plaid +
+  Gemini / Ollama). Builds RAG context from net-worth + IBKR + Teller +
   analysis-svc + sentiment-svc + cpp-signal-engine (regime), optionally
   including FinGPT forecasts. The C++ regime line is the only directional
   market signal that has no Java or Python equivalent in the stack.
 
-### Legacy trading services (profile: trading, off by default)
-- `order-gateway-svc` (8081, Java): order intake, publishes to Kafka
-- `risk-svc` (8082, Java): pre-trade risk checks
-- `match-engine-svc` (8083, Java): price-time-priority matching simulator
-- `portfolio-svc` (8084, Java): fills, positions, realized PnL
-- `api-gw-graphql` (8085, Java): GraphQL + WebSocket bridge
-
 ### Shared runtime
-- Redpanda (Kafka API, port 19092): event bus for market ticks, sentiment
-  scores, forecasts, and (when trading profile is on) orders/fills
+- Redpanda (Kafka API, port 19092): event bus for IBKR/Teller balances,
+  sentiment scores, forecasts, and net-worth snapshots
 - TimescaleDB / Postgres (5432): persistent storage for net worth snapshots,
-  positions, transactions, and trading data
+  positions, and transactions
 - Redis (6379): cache layer
 - Prometheus (9090) + Grafana (3001): metrics and dashboards
 
@@ -97,16 +88,11 @@ match-engine with a real broker connector (most likely IBKR FIX or REST).
 | 3001  | grafana             | default  |
 | 5432  | postgres            | default  |
 | 6379  | redis               | default  |
-| 8081  | order-gateway       | trading  |
-| 8082  | risk-svc            | trading  |
-| 8083  | match-engine        | trading  |
-| 8084  | portfolio-svc       | trading  |
-| 8085  | api-gw-graphql      | default  |
 | 8088  | analysis-svc        | default  |
 | 8089  | backtest-svc        | default  |
 | 8090  | model-svc           | default  |
 | 8091  | ibkr-sync-svc       | default  |
-| 8092  | plaid-banking-svc   | default  |
+| 8092  | teller-banking-svc  | default  |
 | 8093  | net-worth-svc       | default  |
 | 8094  | ai-advisor-svc      | default  |
 | 8095  | alerts-svc          | default  |
@@ -180,33 +166,26 @@ on first `/forecast/{symbol}` request and stays resident.
 
 ## Recommended next phases
 
-The original ARCHITECTURE.md listed trading-platform next steps. Those still
-apply if and when the trading profile is revived. The current personal-finance
-roadmap is:
+The personal-finance roadmap:
 
 1. Add pgvector and a knowledge-base service for 10-K filings and earnings
    transcripts, fed to the AI advisor as RAG context. (This is the next
    meaningful capability gap.)
-2. Add real IBKR positions and real Plaid banking with proper credential UX,
-   replacing the current sandbox defaults.
+2. Expand real-broker / banking coverage (more IBKR account types, multiple
+   Teller institutions) with richer credential UX.
 3. Apply the dataMode pattern to the few remaining places that still display
    the legacy `isReal` boolean tag (the hooks already expose dataMode; some
    pages haven't been rewired to use the unified tag helper yet).
-4. Optional: re-enable the trading profile with a real broker execution
-   connector if the project ever returns to that direction.
 
 Recently shipped (no longer roadmap items):
 
-- Frontend `npm run build` works cleanly; framer-motion and other unused
-  deps removed; Sidebar uses CSS transitions
-- README, ARCHITECTURE, pom, and docker-compose now tell one coherent
-  trading-vs-monitoring story
-- All hooks expose `dataMode`; UI surfaces it via the TickerTape badge and
-  per-page tags
-- Every service has restart policies + healthchecks in docker-compose
-- C++ engine wired into ai-advisor-svc via a new `/regime` endpoint
-  (Phase 2 of the C++ integration plan; other phases deliberately skipped)
+- API token auth across all Java + Python services (opt-in via `API_TOKEN`)
+- Prometheus metrics on the Python services; Grafana dashboards
+- JUnit + pytest suites and a GitHub Actions CI pipeline
+- Finance engine: portfolio rebalancing, FIFO capital-gains, dividend projection
+- C++ engine wired into ai-advisor-svc and analysis-svc via a `/regime` endpoint
 - AI advisor RAG context covered by integration smoke test
-- Dead code removed: useWebSocket, useMarketData, lib/api.js, lib/marketdata.js,
-  lib/platform.js, plus the trading-era root scripts (start/stop/test-smoke)
-  and static preview.html. All moved to `.archived-cleanup/` for review.
+- Banking integration renamed Plaid → Teller.io (the implementation was always
+  Teller); production mTLS support
+- Legacy trading services (order-gateway, risk-svc, match-engine, portfolio-svc,
+  api-gw-graphql, market-data-svc) and all archived dead code fully removed

@@ -32,7 +32,7 @@ ollama:
 services:
   net-worth:  ${NET_WORTH_URL:http://net-worth-svc:8093}
   ibkr:       ${IBKR_URL:http://ibkr-sync-svc:8091}
-  plaid:      ${PLAID_URL:http://plaid-banking-svc:8092}
+  teller:     ${TELLER_URL:http://teller-banking-svc:8092}
   analysis:   ${ANALYSIS_URL:http://analysis-svc:8088}
   sentiment:  ${SENTIMENT_URL:http://sentiment-svc:8097}
   fingpt:     ${FINGPT_URL:http://fingpt-svc:8098}

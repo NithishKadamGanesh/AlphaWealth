@@ -20,11 +20,14 @@ import requests
 from bs4 import BeautifulSoup
 import asyncio
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote as url_quote
 import uvicorn
+
+from starlette.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -35,6 +38,56 @@ app.add_middleware(CORSMiddleware,
                    allow_origins=["*"],
                    allow_methods=["*"],
                    allow_headers=["*"])
+
+# ─── API token auth (opt-in: enforced only when API_TOKEN is set) ──
+API_TOKEN = os.getenv("API_TOKEN", "").strip()
+_AUTH_PUBLIC_PATHS = {"/", "/health", "/ready", "/metrics", "/docs", "/openapi.json", "/redoc"}
+if API_TOKEN:
+    log.info("API token auth ENABLED — requests require Authorization: Bearer <token> or X-API-Token")
+else:
+    log.warning("API_TOKEN not set — auth DISABLED (open access). Set API_TOKEN to require a token.")
+
+
+@app.middleware("http")
+async def _token_auth(request, call_next):
+    if API_TOKEN and request.method != "OPTIONS" and request.url.path not in _AUTH_PUBLIC_PATHS:
+        auth = request.headers.get("authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-token", "")
+        if token != API_TOKEN:
+            origin = request.headers.get("origin", "*")
+            return JSONResponse(
+                status_code=401,
+                content={"error": "unauthorized", "detail": "missing or invalid API token"},
+                headers={"Access-Control-Allow-Origin": origin, "Vary": "Origin"},
+            )
+    return await call_next(request)
+
+
+# ─── Prometheus metrics (/metrics) — guarded so the service still runs
+#     even if the instrumentator package isn't installed. ──────────────
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    from prometheus_client import Counter
+
+    QUOTE_CACHE_HITS = Counter("livedata_quote_cache_hits_total", "Quote cache hits")
+    QUOTE_CACHE_MISSES = Counter("livedata_quote_cache_misses_total", "Quote cache misses")
+    UPSTREAM_FETCH_ERRORS = Counter("livedata_upstream_fetch_errors_total", "Upstream (yfinance) fetch errors")
+
+    Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+    log.info("Prometheus metrics exposed at /metrics")
+    _METRICS = True
+except Exception as e:  # pragma: no cover
+    log.warning(f"Prometheus instrumentation unavailable: {e}")
+    QUOTE_CACHE_HITS = QUOTE_CACHE_MISSES = UPSTREAM_FETCH_ERRORS = None
+    _METRICS = False
+
+
+def _metric_inc(counter):
+    if counter is not None:
+        try:
+            counter.inc()
+        except Exception:
+            pass
 
 executor = ThreadPoolExecutor(max_workers=8)
 _quote_cache: dict = {}
@@ -180,12 +233,15 @@ def _fetch_quote_sync(symbol: str) -> dict:
     cache_key = f"quote:{symbol}"
     cached = _quote_cache.get(cache_key)
     if _cache_is_fresh(cached, _quote_cache_ttl):
+        _metric_inc(QUOTE_CACHE_HITS)
         return cached["data"]
 
+    _metric_inc(QUOTE_CACHE_MISSES)
     try:
         data = _quote_from_chart(symbol, _fetch_yahoo_chart(symbol, "5d", "1d"))
         return _cache_put(_quote_cache, cache_key, data)
     except Exception as e:
+        _metric_inc(UPSTREAM_FETCH_ERRORS)
         if cached:
             log.warning(f"Using cached quote for {symbol} after live fetch failed: {e}")
             return {**cached["data"], "stale": True, "timestamp": datetime.now().isoformat()}
@@ -201,11 +257,51 @@ async def get_quote(symbol: str):
 
 @app.get("/quotes")
 async def get_multiple_quotes(symbols: str):
-    syms = [s.strip().upper() for s in symbols.split(",")]
+    """Bulk quote fetch.
+
+    Returns a dict shape that always reports partial-success state so the frontend
+    can distinguish "all good" from "5 of 10 silently failed". The legacy flat
+    {symbol: quote} shape is kept under the `quotes` key for backwards compat —
+    new callers should read `meta` to learn what failed.
+    """
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not syms:
+        return {"quotes": {}, "meta": {"requested": 0, "succeeded": 0, "failed": [], "status": "ok"}}
+
     loop = asyncio.get_event_loop()
     tasks = [loop.run_in_executor(executor, _fetch_quote_sync, s) for s in syms]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    return {s: (r if not isinstance(r, Exception) else {"error": str(r)}) for s, r in zip(syms, results)}
+
+    quotes: dict = {}
+    failed: list = []
+    for sym, r in zip(syms, results):
+        if isinstance(r, Exception):
+            quotes[sym] = {"error": str(r), "symbol": sym}
+            failed.append({"symbol": sym, "error": str(r)})
+        else:
+            quotes[sym] = r
+
+    succeeded = len(syms) - len(failed)
+    if failed:
+        # Loud warning so operators see partial failures in logs instead of silently
+        # returning a shorter list to clients.
+        log.warning(
+            "Bulk quote partial failure: %d of %d failed (%s)",
+            len(failed), len(syms), ", ".join(f["symbol"] for f in failed),
+        )
+
+    status = "ok" if not failed else ("partial" if succeeded > 0 else "error")
+    payload = {
+        **quotes,  # legacy flat shape for back-compat
+        "quotes": quotes,
+        "meta": {
+            "requested": len(syms),
+            "succeeded": succeeded,
+            "failed": failed,
+            "status": status,
+        },
+    }
+    return payload
 
 
 def _bars_for(symbol: str, period: str, interval: str) -> list:

@@ -13,12 +13,26 @@ import java.util.*;
 /**
  * Core backtest replay engine.
  *
- * FIXES & ADDITIONS from code review:
+ * Capabilities:
  *   1. Short selling support (signal -1 with no position opens short)
  *   2. Stop-loss and take-profit as configurable parameters
  *   3. Intrabar stop-loss checking using high/low (not just close)
  *   4. Walk-forward split support
- *   5. Max concurrent position limit
+ *   5. Single-position model: at most one open position (long or short) at a time.
+ *      Signal flips first close the existing position, then open the opposite side.
+ *      This is by design — overlapping trades require lot tracking which this engine
+ *      does not implement.
+ *
+ * Slippage convention (all directions unfavorable to the trader):
+ *   - LONG  ENTRY (buy)   : execution = px * (1 + slip)  [pay more]
+ *   - LONG  EXIT  (sell)  : execution = px * (1 - slip)  [receive less]
+ *   - SHORT ENTRY (sell)  : execution = px * (1 - slip)  [receive less]
+ *   - SHORT EXIT  (buy)   : execution = px * (1 + slip)  [pay more]
+ *
+ * Position sizing:
+ *   By default position size is the integer floor of (cash * positionPct) / price
+ *   which can truncate up to one share of value. Pass {@code allowFractionalShares=true}
+ *   via the long-form {@code run()} overload to round to 4 decimals instead.
  */
 @Component
 public class BacktestEngine {
@@ -50,6 +64,14 @@ public class BacktestEngine {
         List<Double> equity = new ArrayList<>();
         Map<String, Object> state = new HashMap<>();
         double peak = capital, maxDD = 0, maxDDPct = 0;
+        int skippedEntries = 0;    // SAFETY: count of signals rejected by position-sizing guard
+
+        // Clamp positionPct to sensible bounds so a misconfigured strategy can't
+        // request more than 100% of available cash per entry.
+        double safePositionPct = Math.max(0.0, Math.min(positionPct, 1.0));
+        if (safePositionPct != positionPct) {
+            log.warn("Backtest positionPct clamped from {} to {} (must be in [0,1])", positionPct, safePositionPct);
+        }
 
         for (int i = 0; i < bars.size(); i++) {
             Bar bar = bars.get(i);
@@ -109,14 +131,21 @@ public class BacktestEngine {
                         i, bar.date(), r(adj), "SHORT", absPos, r(pnl), r(pnlPct), "SIGNAL"));
                     position = 0;
                 }
-                // Open long
+                // Open long. SAFETY: we explicitly require (1) position == 0 after
+                // any close above, (2) cost <= cash so we never go negative, and
+                // (3) qty > 0 so we never open a zero-share trade.
                 double adj = px * (1 + slippage / 10000.0);
-                int qty = (int) ((cash * positionPct - commission) / adj);
-                if (qty > 0) {
-                    cash -= qty * adj + commission;
+                int qty = (int) ((cash * safePositionPct - commission) / adj);
+                double cost = qty * adj + commission;
+                if (position == 0 && qty > 0 && cost <= cash) {
+                    cash -= cost;
                     position = qty;
                     entryPrice = adj;
                     entryIdx = i;
+                } else if (qty > 0) {
+                    skippedEntries++;
+                    log.debug("Skipping LONG entry at bar {}: qty={} cost={} cash={} position={}",
+                            i, qty, cost, cash, position);
                 }
             } else if (sig == -1 && position >= 0) {
                 // Close long if open
@@ -130,14 +159,21 @@ public class BacktestEngine {
                         i, bar.date(), r(adj), "LONG", position, r(pnl), r(pnlPct), "SIGNAL"));
                     position = 0;
                 }
-                // Open short
+                // Open short. SAFETY: same single-position invariant as the long
+                // branch. We additionally require commission < proceeds so the
+                // short never opens for negative net cash.
                 double adj = px * (1 - slippage / 10000.0);
-                int qty = (int) ((cash * positionPct - commission) / adj);
-                if (qty > 0) {
-                    cash += qty * adj - commission;
+                int qty = (int) ((cash * safePositionPct - commission) / adj);
+                double proceeds = qty * adj - commission;
+                if (position == 0 && qty > 0 && proceeds > 0) {
+                    cash += proceeds;
                     position = -qty;
                     entryPrice = adj;
                     entryIdx = i;
+                } else if (qty > 0) {
+                    skippedEntries++;
+                    log.debug("Skipping SHORT entry at bar {}: qty={} proceeds={} cash={} position={}",
+                            i, qty, proceeds, cash, position);
                 }
             }
         }
@@ -179,6 +215,11 @@ public class BacktestEngine {
         double sharpe = computeSharpe(equity);
         List<Map<String, Object>> monthly = computeMonthly(bars, equity);
         String period = bars.isEmpty() ? "N/A" : bars.get(0).date() + " to " + bars.get(bars.size() - 1).date();
+
+        if (skippedEntries > 0) {
+            log.info("Backtest {} on {}: {} signal(s) rejected by position-sizing guard (insufficient cash or already-open position)",
+                    strategy.name(), symbol, skippedEntries);
+        }
 
         return new BacktestResult(symbol, strategy.name(), period, bars.size(), trades.size(), wins, losses,
             r(winRate), r(totalPnl), r(totalPnlPct), r(maxDD), r(maxDDPct), r(sharpe), r(pf),

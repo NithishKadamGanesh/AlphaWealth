@@ -124,10 +124,10 @@ SELECT create_hypertable('ibkr_account_summary', 'ts', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_ibkr_acct_ts ON ibkr_account_summary(account, ts DESC);
 
 -- ─────────────────────────────────────────────────────────────────
--- PLAID INTEGRATION
+-- TELLER (BANKING) INTEGRATION
 -- ─────────────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS plaid_accounts (
+CREATE TABLE IF NOT EXISTS teller_accounts (
     account_id     VARCHAR(64) PRIMARY KEY,
     institution    VARCHAR(64),
     name           VARCHAR(128),
@@ -137,17 +137,17 @@ CREATE TABLE IF NOT EXISTS plaid_accounts (
     last_synced    TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS plaid_balances (
+CREATE TABLE IF NOT EXISTS teller_balances (
     ts          TIMESTAMPTZ NOT NULL,
     account_id  VARCHAR(64) NOT NULL,
     balance     NUMERIC(18,2),
     available   NUMERIC(18,2),
     currency    VARCHAR(8)
 );
-SELECT create_hypertable('plaid_balances', 'ts', if_not_exists => TRUE);
-CREATE INDEX IF NOT EXISTS idx_plaid_bal_account ON plaid_balances(account_id, ts DESC);
+SELECT create_hypertable('teller_balances', 'ts', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_teller_bal_account ON teller_balances(account_id, ts DESC);
 
-CREATE TABLE IF NOT EXISTS plaid_transactions (
+CREATE TABLE IF NOT EXISTS teller_transactions (
     transaction_id  VARCHAR(64) PRIMARY KEY,
     account_id      VARCHAR(64) NOT NULL,
     merchant        VARCHAR(256),
@@ -162,9 +162,9 @@ CREATE TABLE IF NOT EXISTS plaid_transactions (
     raw             JSONB,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_plaid_tx_account_date ON plaid_transactions(account_id, date DESC);
-CREATE INDEX IF NOT EXISTS idx_plaid_tx_category     ON plaid_transactions(category);
-CREATE INDEX IF NOT EXISTS idx_plaid_tx_date         ON plaid_transactions(date DESC);
+CREATE INDEX IF NOT EXISTS idx_teller_tx_account_date ON teller_transactions(account_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_teller_tx_category     ON teller_transactions(category);
+CREATE INDEX IF NOT EXISTS idx_teller_tx_date         ON teller_transactions(date DESC);
 
 -- ─────────────────────────────────────────────────────────────────
 -- NET WORTH AGGREGATION
@@ -270,6 +270,9 @@ CREATE TABLE IF NOT EXISTS budget_categories (
     created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Seed reasonable defaults if no budget categories exist yet.
+-- These can be edited/deleted via the UI; ON CONFLICT means they're only created on
+-- a truly fresh database, not re-inserted on every restart.
 INSERT INTO budget_categories (name, monthly_limit, color) VALUES
     ('Housing',       1900, '#7c3aed'),
     ('Groceries',      500, '#06b6d4'),
@@ -280,3 +283,59 @@ INSERT INTO budget_categories (name, monthly_limit, color) VALUES
     ('Shopping',       300, '#ec4899'),
     ('Health',         200, '#06b6d4')
 ON CONFLICT (name) DO NOTHING;
+
+-- ─────────────────────────────────────────────────────────────────
+-- TimescaleDB COMPRESSION & RETENTION POLICIES
+--
+-- Goal: keep recent data hot for fast reads, compress older chunks (10-20×
+-- smaller on disk), and finally drop ancient data we'll never query.
+-- All policies are guarded with EXCEPTION WHEN OTHERS so a re-run on an
+-- existing DB doesn't fail; the underlying add_*_policy calls are themselves
+-- idempotent in modern TimescaleDB, but we wrap defensively for older releases.
+-- ─────────────────────────────────────────────────────────────────
+
+DO $$
+BEGIN
+    -- market_data: compress after 30 days, drop after 5 years.
+    BEGIN
+        ALTER TABLE market_data SET (timescaledb.compress, timescaledb.compress_segmentby = 'symbol');
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_compression_policy('market_data', INTERVAL '30 days'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_retention_policy ('market_data', INTERVAL '5 years'); EXCEPTION WHEN OTHERS THEN NULL; END;
+
+    -- technical_signals: compress after 30 days, drop after 2 years.
+    BEGIN
+        ALTER TABLE technical_signals SET (timescaledb.compress, timescaledb.compress_segmentby = 'symbol');
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_compression_policy('technical_signals', INTERVAL '30 days'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_retention_policy ('technical_signals', INTERVAL '2 years'); EXCEPTION WHEN OTHERS THEN NULL; END;
+
+    -- ibkr_positions: compress after 14 days, drop after 3 years.
+    BEGIN
+        ALTER TABLE ibkr_positions SET (timescaledb.compress, timescaledb.compress_segmentby = 'symbol');
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_compression_policy('ibkr_positions', INTERVAL '14 days'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_retention_policy ('ibkr_positions', INTERVAL '3 years'); EXCEPTION WHEN OTHERS THEN NULL; END;
+
+    -- ibkr_account_summary: compress after 30 days, drop after 5 years.
+    BEGIN
+        ALTER TABLE ibkr_account_summary SET (timescaledb.compress, timescaledb.compress_segmentby = 'account');
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_compression_policy('ibkr_account_summary', INTERVAL '30 days'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_retention_policy ('ibkr_account_summary', INTERVAL '5 years'); EXCEPTION WHEN OTHERS THEN NULL; END;
+
+    -- teller_balances: compress after 30 days, drop after 5 years.
+    BEGIN
+        ALTER TABLE teller_balances SET (timescaledb.compress, timescaledb.compress_segmentby = 'account_id');
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_compression_policy('teller_balances', INTERVAL '30 days'); EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_retention_policy ('teller_balances', INTERVAL '5 years'); EXCEPTION WHEN OTHERS THEN NULL; END;
+
+    -- net_worth_snapshots: compress after 90 days. NO retention policy — long
+    -- history matters here for FIRE projections, and rows are small (one per hour).
+    BEGIN
+        ALTER TABLE net_worth_snapshots SET (timescaledb.compress);
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN PERFORM add_compression_policy('net_worth_snapshots', INTERVAL '90 days'); EXCEPTION WHEN OTHERS THEN NULL; END;
+END $$;
+

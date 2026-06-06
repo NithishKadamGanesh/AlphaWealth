@@ -1,5 +1,5 @@
 // ui/src/hooks/useBanking.js
-// Fetches Teller data from plaid-banking-svc:8092 (/banking/* endpoints).
+// Fetches Teller data from teller-banking-svc:8092 (/banking/* endpoints).
 //
 // dataMode: "live" / "stale" / "simulated"
 
@@ -7,7 +7,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { transactions as mockTx, spendingByCategory as mockCats } from "../lib/mockData";
 import { computeSpendingCategories } from "../lib/banking";
 
-const URL = import.meta.env.VITE_PLAID_URL || "http://localhost:8092";
+const URL = import.meta.env.VITE_TELLER_URL || "http://localhost:8092";
 const TIMEOUT_MS = 6000;
 
 const mockAccounts = [

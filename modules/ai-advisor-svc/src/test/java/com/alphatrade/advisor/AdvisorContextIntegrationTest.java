@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Coverage:
  *   - Net worth section appears with the right numbers
  *   - IBKR positions section appears
- *   - Plaid spending categories appear
+ *   - Teller spending categories appear
  *   - Per-symbol: technical signal, multi-timeframe, patterns, FinBERT, regime
  *   - When includeForecast=false, FinGPT is NOT called (saves ~5s/symbol)
  *   - When includeForecast=true, FinGPT line appears
@@ -45,7 +45,7 @@ class AdvisorContextIntegrationTest {
 
     private MockWebServer netWorth;
     private MockWebServer ibkr;
-    private MockWebServer plaid;
+    private MockWebServer teller;
     private MockWebServer analysis;
     private MockWebServer sentiment;
     private MockWebServer fingpt;
@@ -58,7 +58,7 @@ class AdvisorContextIntegrationTest {
     void setUp() throws IOException {
         netWorth  = new MockWebServer(); netWorth.start();
         ibkr      = new MockWebServer(); ibkr.start();
-        plaid     = new MockWebServer(); plaid.start();
+        teller     = new MockWebServer(); teller.start();
         analysis  = new MockWebServer(); analysis.start();
         sentiment = new MockWebServer(); sentiment.start();
         fingpt    = new MockWebServer(); fingpt.start();
@@ -75,7 +75,7 @@ class AdvisorContextIntegrationTest {
         // Inject mock URLs into all the @Value-bound fields
         ReflectionTestUtils.setField(controller, "netWorthUrl",  url(netWorth));
         ReflectionTestUtils.setField(controller, "ibkrUrl",      url(ibkr));
-        ReflectionTestUtils.setField(controller, "plaidUrl",     url(plaid));
+        ReflectionTestUtils.setField(controller, "tellerUrl",     url(teller));
         ReflectionTestUtils.setField(controller, "analysisUrl",  url(analysis));
         ReflectionTestUtils.setField(controller, "sentimentUrl", url(sentiment));
         ReflectionTestUtils.setField(controller, "fingptUrl",    url(fingpt));
@@ -96,7 +96,7 @@ class AdvisorContextIntegrationTest {
 
     @AfterEach
     void tearDown() throws IOException {
-        for (MockWebServer s : List.of(netWorth, ibkr, plaid, analysis, sentiment, fingpt, liveData, cppEngine)) {
+        for (MockWebServer s : List.of(netWorth, ibkr, teller, analysis, sentiment, fingpt, liveData, cppEngine)) {
             s.shutdown();
         }
     }
@@ -120,7 +120,7 @@ class AdvisorContextIntegrationTest {
              {"symbol":"NVDA","secType":"STK","position":"10","avgCost":"700.00","currency":"USD"}]
             """));
 
-        plaid.setDispatcher(staticDispatcher("""
+        teller.setDispatcher(staticDispatcher("""
             [{"merchant":"Whole Foods","category":"Groceries","amount":-87.50,"date":"2026-05-01"},
              {"merchant":"Shell","category":"Gas","amount":-45.20,"date":"2026-05-02"},
              {"merchant":"Direct Deposit","category":"Income","amount":4500.00,"date":"2026-05-01"}]
@@ -206,7 +206,7 @@ class AdvisorContextIntegrationTest {
         // Minimal stubs - just enough to render the symbol section
         netWorth.setDispatcher(staticDispatcher("{\"netWorth\":1,\"totalAssets\":1,\"totalLiabilities\":0,\"cash\":0,\"investments\":0,\"property\":0,\"retirement\":0,\"crypto\":0,\"otherAssets\":0}"));
         ibkr.setDispatcher(staticDispatcher("[]"));
-        plaid.setDispatcher(staticDispatcher("[]"));
+        teller.setDispatcher(staticDispatcher("[]"));
         analysis.setDispatcher(notFoundDispatcher());
         sentiment.setDispatcher(notFoundDispatcher());
         liveData.setDispatcher(notFoundDispatcher());
@@ -234,7 +234,7 @@ class AdvisorContextIntegrationTest {
              "crypto":0,"otherAssets":0}
             """));
         ibkr.setDispatcher(errorDispatcher(503));
-        plaid.setDispatcher(errorDispatcher(503));
+        teller.setDispatcher(errorDispatcher(503));
         analysis.setDispatcher(errorDispatcher(503));
         sentiment.setDispatcher(errorDispatcher(503));
         fingpt.setDispatcher(errorDispatcher(503));
@@ -263,7 +263,7 @@ class AdvisorContextIntegrationTest {
              "property":0,"retirement":0,"crypto":0,"otherAssets":0}
             """));
         ibkr.setDispatcher(staticDispatcher("[]"));
-        plaid.setDispatcher(staticDispatcher("[]"));
+        teller.setDispatcher(staticDispatcher("[]"));
         analysis.setDispatcher(notFoundDispatcher());
         sentiment.setDispatcher(notFoundDispatcher());
 

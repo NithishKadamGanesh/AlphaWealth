@@ -10,6 +10,7 @@ import { useNetWorth } from "../hooks/useNetWorth";
 import { useIbkrPositions } from "../hooks/useIbkrPositions";
 import { useBanking } from "../hooks/useBanking";
 import { summarizeCashFlow } from "../lib/banking";
+import { getDisplayName } from "../lib/userPrefs";
 
 const AI_ADVISOR_URL = import.meta.env.VITE_AI_ADVISOR_URL || "http://localhost:8094";
 const DEFAULT_WATCH = ["AAPL", "NVDA", "MSFT", "VOO"];
@@ -26,10 +27,12 @@ export const AIAdvisor = () => {
   const { positions, summary } = useIbkrPositions();
   const { transactions } = useBanking();
 
+  const displayName = getDisplayName();
+  const greetingName = displayName === "there" ? "" : ` ${displayName}`;
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      content: "Hi Nithish. I have your full financial picture loaded — net worth, IBKR portfolio, Chase accounts, spending data, real-time technical signals, and FinBERT news sentiment scores. Toggle 'Include FinGPT forecasts' below if you want next-week directional predictions in my context (slower but more forward-looking). What would you like to dig into?"
+      content: `Hi${greetingName}. I have your full financial picture loaded — net worth, IBKR portfolio, Chase accounts, spending data, real-time technical signals, and FinBERT news sentiment scores. Toggle 'Include FinGPT forecasts' below if you want next-week directional predictions in my context (slower but more forward-looking). What would you like to dig into?`
     }
   ]);
   const [input, setInput] = useState("");
