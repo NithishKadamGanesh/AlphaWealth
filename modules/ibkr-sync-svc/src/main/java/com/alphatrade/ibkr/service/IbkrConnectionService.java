@@ -289,10 +289,15 @@ public class IbkrConnectionService {
     private SessionProbe probeSession() {
         JsonNode status = postJson("/v1/api/iserver/auth/status");
         gatewayReachable = true;
-        boolean authorized = status.path("authenticated").asBoolean(false)
-                || status.path("connected").asBoolean(false)
-                || status.path("established").asBoolean(false);
-        if (authorized) {
+        if (isAuthorized(status)) {
+            return new SessionProbe(true, null);
+        }
+
+        // Session not authenticated. If the gateway SSO is still alive, try to
+        // silently reclaim the brokerage session before falling back to "login
+        // required" — covers the 5-min inactivity timeout and competing-session
+        // bumps (TWS / IBKR Mobile) without a full manual re-login.
+        if (config.isAutoReauthenticate() && attemptReauthenticate()) {
             return new SessionProbe(true, null);
         }
 
@@ -309,6 +314,48 @@ public class IbkrConnectionService {
         }
 
         return new SessionProbe(false, null);
+    }
+
+    private boolean isAuthorized(JsonNode status) {
+        return status.path("authenticated").asBoolean(false)
+                || status.path("connected").asBoolean(false)
+                || status.path("established").asBoolean(false);
+    }
+
+    /**
+     * Ask the gateway to reauthenticate the brokerage session, then poll auth
+     * status a few times to see if it comes back. Returns true if the session is
+     * authenticated afterwards. Best-effort: any failure just returns false so the
+     * caller falls through to the normal "login required" path.
+     */
+    private boolean attemptReauthenticate() {
+        try {
+            log.info("IBKR brokerage session not authenticated — requesting reauthenticate");
+            postJson("/v1/api/iserver/reauthenticate");
+        } catch (Exception e) {
+            log.debug("IBKR reauthenticate request failed: {}", rootCauseMessage(e));
+            return false;
+        }
+        // Reauth is asynchronous on the gateway side; give it a few short polls.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            try {
+                JsonNode status = postJson("/v1/api/iserver/auth/status");
+                if (isAuthorized(status)) {
+                    log.info("IBKR brokerage session reauthenticated successfully");
+                    return true;
+                }
+            } catch (Exception e) {
+                log.debug("IBKR auth-status recheck after reauthenticate failed: {}", rootCauseMessage(e));
+            }
+        }
+        log.info("IBKR reauthenticate did not restore the session (SSO session likely expired — manual login required)");
+        return false;
     }
 
     private String fetchPrimaryAccountId() {

@@ -21,6 +21,14 @@ public class IbkrConfig {
      * production deployments where you have installed the gateway certificate into a
      * truststore (see {@link #trustStorePath}).
      */
+    /**
+     * When the brokerage session drops (5-min inactivity, a competing TWS/IBKR Mobile
+     * login, etc.) but the gateway SSO session is still alive, automatically call
+     * {@code /v1/api/iserver/reauthenticate} to silently reclaim it — so the user
+     * rarely has to log in through the gateway again. Set false to disable.
+     */
+    private boolean autoReauthenticate = true;
+
     private boolean trustSelfSigned = true;
 
     /**
