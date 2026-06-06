@@ -5,6 +5,7 @@ import { Card } from "../components/ui/Card";
 import { Tag } from "../components/ui/Tag";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Button } from "../components/ui/Button";
+import { AvatarUploader } from "../components/AvatarUploader";
 import { cn, fmtMoney } from "../lib/cn";
 import { useNetWorth } from "../hooks/useNetWorth";
 import { useIbkrPositions } from "../hooks/useIbkrPositions";
@@ -230,7 +231,7 @@ export const AIAdvisor = () => {
       <Card padded={false} className="h-[580px] flex flex-col animate-slide-up" style={{ animationDelay: "100ms" }}>
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {messages.map((m, i) => (
-            <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+            <div key={i} className={cn("flex items-end gap-2", m.role === "user" ? "justify-end" : "justify-start")}>
               <div className={cn(
                 "max-w-[75%] px-4 py-3 text-sm leading-relaxed",
                 m.role === "user"
@@ -250,6 +251,9 @@ export const AIAdvisor = () => {
                 )}
                 <div className="whitespace-pre-wrap">{m.content}</div>
               </div>
+              {m.role === "user" && (
+                <AvatarUploader size={28} editable={false} className="mb-0.5" />
+              )}
             </div>
           ))}
           {loading && (
