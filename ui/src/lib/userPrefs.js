@@ -7,6 +7,7 @@ const KEYS = {
   displayName: "alphawealth.displayName",
   fireTarget:  "alphawealth.fireTarget",
   apiToken:    "alphawealth.apiToken",
+  avatar:      "alphawealth.avatar",
 };
 
 export const DEFAULTS = {
@@ -59,6 +60,23 @@ export function getApiToken() {
 
 export function setApiToken(token) {
   safeSet(KEYS.apiToken, token);
+}
+
+/** Profile avatar, stored as a small base64 data URL (or "" if none). */
+export function getAvatar() {
+  const v = safeGet(KEYS.avatar);
+  return v && v.startsWith("data:") ? v : "";
+}
+
+export function setAvatar(dataUrl) {
+  safeSet(KEYS.avatar, dataUrl);
+}
+
+/** Two-letter initials derived from a name, for the avatar fallback. */
+export function initialsFromName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
 }
 
 /** Greeting that adapts to local time-of-day. */

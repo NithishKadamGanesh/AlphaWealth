@@ -6,6 +6,7 @@ import { Tag, Pulse } from "../components/ui/Tag";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Button } from "../components/ui/Button";
 import { BrokerConnections } from "../components/BrokerConnections";
+import { AvatarUploader } from "../components/AvatarUploader";
 import { cn } from "../lib/cn";
 import {
   getDisplayName, setDisplayName,
@@ -90,10 +91,17 @@ export const Settings = () => {
     <div className="space-y-6 max-w-[1400px]">
       <PageHeader title="Settings & Connections" subtitle="LLM provider — service health — GPU status — integrations" />
 
-      {/* User Profile (display name + FIRE target) */}
+      {/* User Profile (photo + display name + FIRE target) */}
       <Card className="animate-fade-in">
         <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-4 flex items-center gap-2">
           <Icon name="user" size={11} color={T.muted} /> Profile
+        </div>
+        <div className="flex items-center gap-4 mb-4">
+          <AvatarUploader size={64} name={displayNameInput || "Nithish"} />
+          <div className="text-xs text-zinc-500">
+            <div className="text-ink font-medium text-sm">Profile photo</div>
+            Click the avatar to upload a photo (stored locally on this device).
+          </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <label className="block">

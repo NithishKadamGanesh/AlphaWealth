@@ -5,6 +5,8 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "../lib/cn";
+import { AvatarUploader } from "./AvatarUploader";
+import { getDisplayName, DEFAULTS } from "../lib/userPrefs";
 
 const NAV = [
   { section: "Workspace" },
@@ -39,6 +41,9 @@ export const Sidebar = ({ active, onNav, onCommand, mobileOpen, onMobileClose })
     const saved = localStorage.getItem("aw_theme");
     if (saved === "dark") setDark(true);
   }, []);
+
+  const dn = getDisplayName();
+  const profileName = dn && dn !== DEFAULTS.displayName ? dn : "Nithish";
 
   return (
     <aside className={cn(
@@ -139,11 +144,9 @@ export const Sidebar = ({ active, onNav, onCommand, mobileOpen, onMobileClose })
         </button>
 
         <div className="flex items-center gap-2.5 px-3 py-2">
-          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-accent to-positive flex items-center justify-center text-white text-xs font-semibold">
-            NK
-          </div>
+          <AvatarUploader size={28} name={profileName} />
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-ink truncate">Nithish</div>
+            <div className="text-sm font-medium text-ink truncate">{profileName}</div>
             <div className="text-2xs text-subtle truncate font-mono">nithishkadam@</div>
           </div>
         </div>
