@@ -50,9 +50,11 @@ export const Sidebar = ({ active, onNav, onCommand, mobileOpen, onMobileClose })
       {/* Brand */}
       <div className="px-5 pt-6 pb-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-ink flex items-center justify-center">
-            <span className="text-canvas font-display font-semibold text-sm tracking-tight">a</span>
-          </div>
+          <img
+            src="/alphawealth-symbol.png"
+            alt="AlphaWealth"
+            className="w-9 h-9 rounded-lg object-contain shrink-0"
+          />
           <div>
             <div className="text-sm font-semibold tracking-tight text-ink">AlphaWealth</div>
             <div className="text-2xs text-subtle font-mono">command center</div>
