@@ -2,11 +2,13 @@
 // IBKR connection management UI. Lives on the Settings page, NOT on Portfolio.
 // Portfolio just reads positions; this is where the user manages the link.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { Card } from "./ui/Card";
 import { Button } from "./ui/Button";
 import { Tag } from "./ui/Tag";
 import { useIbkrStatus } from "../hooks/useIbkrStatus";
+import { useIbkrConnect } from "../hooks/useIbkrConnect";
+import { IbkrConnectModal } from "./IbkrConnectModal";
 
 const STATE_COPY = {
   DISCONNECTED:     { variant: "default",  label: "Not connected",  hint: "Start the IBKR Client Portal gateway, then click Connect." },
@@ -37,9 +39,9 @@ function absoluteUrl(pathOrUrl) {
 export function BrokerConnections() {
   const { status, reachable, loading, sync, disconnect, refresh } = useIbkrStatus();
   const loginUrl = absoluteUrl(status?.loginUrl);
-  const loginWindowRef = useRef(null);
-  const autoSyncTriggeredRef = useRef(false);
-  const [loginFlowActive, setLoginFlowActive] = useState(false);
+  // Teller-style connect popup with auto-close on CONNECTED (shared hook).
+  const { connectState, connect: openLogin, cancel: cancelConnect, connecting } =
+    useIbkrConnect({ loginUrl, onConnected: refresh });
 
   const view = useMemo(() => {
     if (loading)           return { ...STATE_COPY.DISCONNECTED, label: "Checking…" };
@@ -55,44 +57,15 @@ export function BrokerConnections() {
     return base;
   }, [status, reachable, loading]);
 
+  // Safety net: if the session is already CONNECTED on load but has no synced
+  // positions yet, kick one sync. (The popup connect flow syncs on its own.)
   useEffect(() => {
-    if (!loginFlowActive) return;
-
-    const timer = window.setInterval(() => {
-      if (!loginWindowRef.current || loginWindowRef.current.closed) {
-        loginWindowRef.current = null;
-        setLoginFlowActive(false);
-        refresh();
-      }
-    }, 1500);
-
-    return () => window.clearInterval(timer);
-  }, [loginFlowActive, refresh]);
-
-  useEffect(() => {
-    if (!status) return;
-
-    if (status.state === "AUTH_REQUIRED") {
-      autoSyncTriggeredRef.current = false;
-      return;
-    }
-
-    if (
-      status.state === "CONNECTED" &&
-      !status.syncInProgress &&
-      !autoSyncTriggeredRef.current &&
-      (!status.lastSyncAt || (status.positionCount ?? 0) === 0)
-    ) {
-      autoSyncTriggeredRef.current = true;
+    if (status?.state === "CONNECTED" && !status.syncInProgress &&
+        (!status.lastSyncAt || (status.positionCount ?? 0) === 0)) {
       sync();
     }
-  }, [status, sync]);
-
-  const openLogin = () => {
-    autoSyncTriggeredRef.current = false;
-    loginWindowRef.current = window.open(loginUrl, "ibkr-login", "noopener,noreferrer");
-    setLoginFlowActive(Boolean(loginWindowRef.current));
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.state]);
 
   return (
     <Card>
@@ -126,8 +99,8 @@ export function BrokerConnections() {
       </dl>
 
       <div className="flex flex-wrap gap-2">
-        <Button variant="primary" size="sm" onClick={openLogin}>
-          Open IBKR login ↗
+        <Button variant="primary" size="sm" onClick={openLogin} disabled={connecting}>
+          {connecting ? "Connecting…" : ((status?.connected || status?.hasSnapshot) ? "Reconnect ↗" : "Connect IBKR ↗")}
         </Button>
         <Button variant="secondary" size="sm" onClick={sync} disabled={reachable === false || loading}>
           Sync now
@@ -140,10 +113,12 @@ export function BrokerConnections() {
       </div>
 
       <p className="text-xs text-muted mt-4 leading-relaxed">
-        Login opens the native IBKR Client Portal gateway on `https://localhost:5001`.
-        After you sign in there, close that tab and AlphaWealth will refresh status and
-        trigger a sync automatically.
+        Connect opens the IBKR Client Portal gateway login in a popup. Once you sign
+        in (username, password, 2FA), AlphaWealth detects it, closes the popup, and
+        syncs automatically — no need to close the tab yourself.
       </p>
+
+      <IbkrConnectModal connectState={connectState} loginUrl={loginUrl} onCancel={cancelConnect} />
     </Card>
   );
 }
