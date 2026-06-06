@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip
 } from "recharts";
-import { Briefcase, Plus } from "lucide-react";
+import { Briefcase, Plus, Loader2, CheckCircle2 } from "lucide-react";
 import { T } from "../lib/tokens";
 import { Icon } from "../components/Icon";
 import { Card } from "../components/ui/Card";
@@ -33,51 +33,115 @@ export const Portfolio = () => {
   const [optimization, setOptimization] = useState(null);
   const [optimizing, setOptimizing] = useState(false);
 
-  // ── IBKR connect flow (mirrors Settings → Broker Connections) ──
-  // IBKR has no JS popup SDK; "connecting" means opening the local Client Portal
-  // gateway login in a new window. When the user closes it, we force a sync.
+  // ── IBKR connect flow — Teller-style ──
+  // IBKR has no embeddable JS SDK, so we open the local Client Portal gateway
+  // login in a small popup window. But because WE opened it, we hold the handle
+  // and can close it ourselves: we poll backend auth status and, the moment it
+  // reports CONNECTED, we auto-close the popup, fire a sync, and show success —
+  // so the user never has to manually close the "Client login succeeds" tab.
   const loginWindowRef = useRef(null);
-  const [loginFlowActive, setLoginFlowActive] = useState(false);
+  const [connectState, setConnectState] = useState("idle"); // idle | waiting | success | blocked
   const ibkrLoginUrl = status?.loginUrl || "https://localhost:5001";
 
   const connectIbkr = () => {
-    loginWindowRef.current = window.open(ibkrLoginUrl, "ibkr-login", "noopener,noreferrer");
-    setLoginFlowActive(Boolean(loginWindowRef.current));
+    const w = 480, h = 720;
+    const left = window.screenX + Math.max(0, Math.round((window.outerWidth - w) / 2));
+    const top  = window.screenY + Math.max(0, Math.round((window.outerHeight - h) / 2));
+    const win = window.open(ibkrLoginUrl, "ibkr-login",
+      `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
+    loginWindowRef.current = win;
+    setConnectState(win ? "waiting" : "blocked");
   };
 
+  const cancelConnect = () => {
+    try { loginWindowRef.current?.close(); } catch {}
+    loginWindowRef.current = null;
+    setConnectState("idle");
+  };
+
+  // While waiting, poll auth status. On CONNECTED → close popup, sync, succeed.
   useEffect(() => {
-    if (!loginFlowActive) return;
-    const timer = setInterval(() => {
+    if (connectState !== "waiting") return;
+    let cancelled = false;
+    const id = setInterval(async () => {
+      let connected = false;
+      try {
+        const res = await fetch(`${IBKR_URL}/ibkr/status`, { signal: AbortSignal.timeout(4000) });
+        if (res.ok) connected = (await res.json())?.state === "CONNECTED";
+      } catch { /* gateway/login still in progress */ }
+      if (cancelled) return;
+
+      if (connected) {
+        try { loginWindowRef.current?.close(); } catch {}
+        loginWindowRef.current = null;
+        setConnectState("success");
+        fetch(`${IBKR_URL}/ibkr/sync`, { method: "POST", signal: AbortSignal.timeout(20_000) })
+          .catch(() => {}).finally(() => refresh());
+        setTimeout(() => { if (!cancelled) setConnectState("idle"); }, 2600);
+        return;
+      }
+      // User closed the popup before authenticating → stop waiting.
       if (!loginWindowRef.current || loginWindowRef.current.closed) {
         loginWindowRef.current = null;
-        setLoginFlowActive(false);
-        // User finished logging in → kick a sync, then refresh status/positions.
-        fetch(`${IBKR_URL}/ibkr/sync`, { method: "POST", signal: AbortSignal.timeout(20_000) })
-          .catch(() => {})
-          .finally(() => refresh());
+        setConnectState("idle");
+        refresh();
       }
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [loginFlowActive, refresh]);
+    }, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [connectState, refresh]);
 
-  const IbkrConnectButton = ({ block = false }) => {
-    const label = loginFlowActive
-      ? "Waiting for login…"
-      : isReal ? "Add / re-auth" : "Connect IBKR";
-    return (
-      <button
-        onClick={connectIbkr}
-        disabled={loginFlowActive}
-        title="Open the IBKR Client Portal gateway login"
-        className={cn(
-          "inline-flex items-center gap-1 font-mono rounded-full bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors disabled:opacity-50",
-          block ? "px-4 py-2 text-sm" : "px-3 py-1 text-xs",
+  const connecting = connectState === "waiting";
+  const IbkrConnectButton = () => (
+    <button
+      onClick={connectIbkr}
+      disabled={connecting}
+      title="Connect Interactive Brokers via the Client Portal gateway"
+      className="inline-flex items-center gap-1 font-mono rounded-full bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors disabled:opacity-50 px-3 py-1 text-xs"
+    >
+      <Plus size={13} strokeWidth={2.5} /> {connecting ? "Connecting…" : (isReal ? "Add / re-auth" : "Connect IBKR")}
+    </button>
+  );
+
+  const ibkrConnectModal = connectState === "idle" ? null : (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 backdrop-blur-sm animate-fade-in" role="dialog" aria-modal="true">
+      <Card className="max-w-md w-full mx-4 text-center space-y-4">
+        {connectState === "success" ? (
+          <>
+            <div className="mx-auto w-12 h-12 rounded-full bg-positive/15 flex items-center justify-center">
+              <CheckCircle2 className="text-positive" size={26} />
+            </div>
+            <h3 className="font-display text-lg font-bold">Connected to IBKR</h3>
+            <p className="text-sm text-muted">Syncing your positions…</p>
+          </>
+        ) : connectState === "blocked" ? (
+          <>
+            <h3 className="font-display text-lg font-bold">Popup blocked</h3>
+            <p className="text-sm text-muted">
+              Your browser blocked the IBKR login window. Allow popups for this
+              site, or open the gateway login directly:
+            </p>
+            <a href={ibkrLoginUrl} target="_blank" rel="noreferrer"
+               className="inline-block text-accent underline text-sm break-all">{ibkrLoginUrl}</a>
+            <div><button onClick={() => setConnectState("idle")} className="text-xs font-mono text-muted hover:text-ink">Close</button></div>
+          </>
+        ) : (
+          <>
+            <div className="mx-auto w-12 h-12 rounded-full bg-accent/15 flex items-center justify-center">
+              <Loader2 className="text-accent animate-spin" size={26} />
+            </div>
+            <h3 className="font-display text-lg font-bold">Connecting to Interactive Brokers</h3>
+            <p className="text-sm text-muted leading-relaxed">
+              Finish signing in (username, password, 2FA) in the IBKR window. This
+              dialog closes itself automatically once you're authenticated — no need
+              to close the IBKR tab yourself.
+            </p>
+            <p className="text-2xs text-subtle font-mono">First time? Accept the self-signed certificate warning in the popup.</p>
+            <button onClick={cancelConnect} className="text-xs font-mono text-muted hover:text-ink">Cancel</button>
+          </>
         )}
-      >
-        <Plus size={block ? 15 : 13} strokeWidth={2.5} /> {label} ↗
-      </button>
-    );
-  };
+      </Card>
+    </div>
+  );
 
   const investedValue = positions.reduce((s, h) => s + (h.marketValue || h.shares * h.price), 0);
   const totalCost = positions.reduce((s, h) => s + h.shares * h.cost, 0);
@@ -179,6 +243,7 @@ export const Portfolio = () => {
 
   return (
     <div className="space-y-6 max-w-[1400px]">
+      {ibkrConnectModal}
       <PageHeader
         title="Portfolio Analyzer"
         subtitle="Backend-owned IBKR snapshots — Correlation matrix — Risk-parity sizing"
