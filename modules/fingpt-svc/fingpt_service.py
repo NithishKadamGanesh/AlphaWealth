@@ -96,6 +96,7 @@ FINGPT_BASE  = os.getenv("FINGPT_BASE",  "NousResearch/Llama-2-7b-chat-hf")  # o
 QUANT = os.getenv("QUANTIZATION", "4bit")
 MAX_VRAM_GB = int(os.getenv("MAX_VRAM_GB", "6"))
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip() or None
+ALLOW_CPU_FINGPT = os.getenv("ALLOW_CPU_FINGPT", "").lower() in ("1", "true", "yes")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 log.info(f"Selected device: {DEVICE}")
@@ -283,6 +284,11 @@ def build_context(symbol: str) -> str:
 
 def generate(prompt: str, max_new_tokens: int = 400) -> str:
     """Run FinGPT inference."""
+    if DEVICE.type != "cuda" and not ALLOW_CPU_FINGPT:
+        raise RuntimeError(
+            "FinGPT 7B is disabled on CPU-only Docker because it exceeds the available memory. "
+            "Set ALLOW_CPU_FINGPT=1 and increase Docker memory if you want to force it."
+        )
     _load_model()
     if _load_error:
         raise RuntimeError(f"FinGPT not available: {_load_error}")
@@ -329,6 +335,70 @@ def parse_forecast(text: str) -> dict:
     return {"direction": direction, "confidence": confidence}
 
 
+def fallback_forecast(symbol: str, ctx: str) -> dict:
+    """CPU-safe forecast from already-computed market and FinBERT context.
+
+    This keeps the UI useful on machines without Docker GPU access while making
+    the model provenance explicit. It is intentionally conservative.
+    """
+    import re
+
+    score = 0.0
+    reasons = []
+
+    change_match = re.search(r"5-day change:\s*([+-]?\d+(?:\.\d+)?)%", ctx)
+    if change_match:
+        change = float(change_match.group(1))
+        score += max(-2.0, min(2.0, change / 2.5))
+        reasons.append(f"5-day price change is {change:+.2f}%.")
+
+    day_match = re.search(r"Day change:\s*([+-]?\d+(?:\.\d+)?)%", ctx)
+    if day_match:
+        day_change = float(day_match.group(1))
+        score += max(-1.0, min(1.0, day_change / 2.0))
+        reasons.append(f"Current session change is {day_change:+.2f}%.")
+
+    sentiment_match = re.search(r"Aggregate:\s*(POSITIVE|NEGATIVE|NEUTRAL).*?score\s*([+-]?\d+(?:\.\d+)?)", ctx, re.I)
+    if sentiment_match:
+        label = sentiment_match.group(1).upper()
+        sentiment_score = float(sentiment_match.group(2))
+        if label == "POSITIVE":
+            score += 1.25 + max(0.0, sentiment_score)
+        elif label == "NEGATIVE":
+            score -= 1.25 + abs(min(0.0, sentiment_score))
+        reasons.append(f"FinBERT news sentiment is {label.lower()} with score {sentiment_score:+.2f}.")
+
+    if score >= 1.0:
+        direction = "BULLISH"
+    elif score <= -1.0:
+        direction = "BEARISH"
+    else:
+        direction = "NEUTRAL"
+
+    confidence = int(max(35, min(72, 45 + abs(score) * 9)))
+    if not reasons:
+        reasons.append("Live price and sentiment context was limited, so the fallback stays neutral.")
+
+    analysis = (
+        "CPU fallback forecast because FinGPT 7B cannot safely load in this Docker environment without GPU access. "
+        + " ".join(reasons[:3])
+        + " Treat this as a lightweight directional estimate until the FinGPT model is available."
+    )
+
+    return {
+        "symbol": symbol,
+        "direction": direction,
+        "confidence": confidence,
+        "analysis": analysis,
+        "context_chars": len(ctx),
+        "model": "CPU fallback: price action + FinBERT",
+        "lora_loaded": False,
+        "lora_error": "FinGPT skipped: CPU-only Docker",
+        "fallback": True,
+        "computed_at": datetime.now().isoformat(),
+    }
+
+
 # ─── API ──────────────────────────────────────────────────────
 
 class TextInput(BaseModel):
@@ -345,6 +415,9 @@ async def forecast(symbol: str):
         # Build context (synchronous, fast)
         ctx = build_context(symbol)
         prompt = FORECAST_PROMPT_TEMPLATE.format(symbol=symbol, context=ctx)
+
+        if DEVICE.type != "cuda" and not ALLOW_CPU_FINGPT:
+            return fallback_forecast(symbol, ctx)
 
         # Run inference in thread pool (slow, blocks)
         text = await loop.run_in_executor(executor, generate, prompt)

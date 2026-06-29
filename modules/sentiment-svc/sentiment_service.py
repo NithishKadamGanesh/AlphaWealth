@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import requests
 import uvicorn
+import re
 
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -82,28 +83,28 @@ LIVE_DATA_URL = os.getenv("LIVE_DATA_URL", "http://live-data-svc:8096")
 # In-memory TTL cache for symbol sentiment. Avoids re-fetching news + re-running
 # FinBERT on every AI Advisor request — the underlying news feed updates slowly.
 import time
-_symbol_cache: dict = {}  # symbol -> (epoch_seconds, payload)
+_symbol_cache: dict = {}  # cache_key -> (epoch_seconds, payload)
 SYMBOL_CACHE_TTL_S = int(os.getenv("SYMBOL_CACHE_TTL_S", "900"))  # 15 min default
 SYMBOL_CACHE_MAX = int(os.getenv("SYMBOL_CACHE_MAX", "256"))
 
 
-def _cache_get(symbol: str):
-    entry = _symbol_cache.get(symbol)
+def _cache_get(cache_key: str):
+    entry = _symbol_cache.get(cache_key)
     if not entry:
         return None
     ts, payload = entry
     if time.time() - ts > SYMBOL_CACHE_TTL_S:
-        _symbol_cache.pop(symbol, None)
+        _symbol_cache.pop(cache_key, None)
         return None
     return payload
 
 
-def _cache_put(symbol: str, payload: dict) -> dict:
+def _cache_put(cache_key: str, payload: dict) -> dict:
     if len(_symbol_cache) >= SYMBOL_CACHE_MAX:
         # Evict the oldest entry. Cheap because we expect <300 keys.
         oldest = min(_symbol_cache.items(), key=lambda kv: kv[1][0])[0]
         _symbol_cache.pop(oldest, None)
-    _symbol_cache[symbol] = (time.time(), payload)
+    _symbol_cache[cache_key] = (time.time(), payload)
     return payload
 
 # ─── GPU detection ────────────────────────────────────────────
@@ -203,6 +204,64 @@ def classify_batch(texts: List[str]) -> List[dict]:
     return results
 
 
+TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
+FINANCE_KEYWORDS = {
+    "earnings", "guidance", "revenue", "profit", "margin", "cash flow",
+    "buyback", "dividend", "merger", "acquisition", "lawsuit", "regulator",
+    "sec", "fda", "downgrade", "upgrade", "price target", "layoff",
+    "partnership", "contract", "debt", "credit", "default", "inflation",
+}
+COMMON_FALSE_TICKERS = {
+    "A", "I", "THE", "AND", "FOR", "WITH", "CEO", "CFO", "SEC", "FDA", "USA",
+    "US", "AI", "EV", "ETF", "IPO", "EPS", "GDP",
+}
+
+
+def extract_entities(text: str, primary_symbol: str | None = None) -> dict:
+    """Fast, deterministic first-pass entity/keyword extraction.
+
+    This is deliberately lightweight so it can run before heavier NER/LLM work.
+    A future spaCy/FinBERT-NER model can replace or augment this without changing
+    the response shape.
+    """
+    text = text or ""
+    tickers = {
+        t for t in TICKER_RE.findall(text)
+        if t not in COMMON_FALSE_TICKERS and (len(t) > 1 or t == primary_symbol)
+    }
+    if primary_symbol:
+        tickers.add(primary_symbol.upper())
+
+    lowered = text.lower()
+    keywords = sorted(k for k in FINANCE_KEYWORDS if k in lowered)
+
+    org_matches = re.findall(
+        r"\b([A-Z][A-Za-z&.\-]+(?:\s+[A-Z][A-Za-z&.\-]+){0,3}\s+"
+        r"(?:Inc|Corp|Corporation|Company|Co|Ltd|PLC|Bank|Group|Holdings))\b",
+        text,
+    )
+
+    return {
+        "tickers": sorted(tickers),
+        "organizations": sorted(set(org_matches))[:10],
+        "keywords": keywords,
+    }
+
+
+def merge_entities(items: List[dict]) -> dict:
+    tickers, orgs, keywords = set(), set(), set()
+    for item in items:
+        e = item.get("entities") or {}
+        tickers.update(e.get("tickers") or [])
+        orgs.update(e.get("organizations") or [])
+        keywords.update(e.get("keywords") or [])
+    return {
+        "tickers": sorted(tickers),
+        "organizations": sorted(orgs)[:20],
+        "keywords": sorted(keywords),
+    }
+
+
 # ─── Models ───────────────────────────────────────────────────
 
 class TextInput(BaseModel):
@@ -227,21 +286,33 @@ async def score_batch(req: BatchTextInput):
 
 
 @app.get("/sentiment/symbol/{symbol}")
-async def score_symbol(symbol: str, refresh: bool = False):
+async def score_symbol(
+    symbol: str,
+    refresh: bool = False,
+    as_of: str | None = None,
+    stored_only: bool = False,
+    limit: int = 25,
+):
     sym_upper = symbol.upper()
+    safe_limit = max(1, min(limit, 100))
+    cache_key = f"{sym_upper}|as_of={as_of or 'live'}|stored={stored_only}|limit={safe_limit}"
     if not refresh:
-        cached = _cache_get(sym_upper)
+        cached = _cache_get(cache_key)
         if cached:
             _metric_inc(SYMBOL_CACHE_HITS)
             return {**cached, "cached": True}
     try:
-        r = requests.get(f"{LIVE_DATA_URL}/news/{symbol}", timeout=10)
+        r = requests.get(
+            f"{LIVE_DATA_URL}/news/{sym_upper}",
+            params={"as_of": as_of, "stored_only": stored_only, "limit": safe_limit},
+            timeout=10,
+        )
         if r.status_code != 200:
             raise HTTPException(404, f"No news for {symbol}")
         articles = r.json()
         if not articles:
-            payload = {"symbol": sym_upper, "articles": [], "aggregated": None}
-            return _cache_put(sym_upper, payload)
+            payload = {"symbol": sym_upper, "as_of": as_of, "articles": [], "aggregated": None}
+            return _cache_put(cache_key, payload)
 
         texts = [a.get("title", "") + " " + (a.get("summary") or "")[:200] for a in articles]
         loop = asyncio.get_event_loop()
@@ -252,11 +323,18 @@ async def score_symbol(symbol: str, refresh: bool = False):
         weight_sum = 0.0
 
         for a, s in zip(articles, scores):
+            entities = extract_entities(
+                " ".join([a.get("title") or "", a.get("summary") or ""]),
+                primary_symbol=sym_upper,
+            )
             scored_articles.append({
                 "title":     a.get("title"),
                 "source":    a.get("source"),
+                "source_name": a.get("source_name"),
                 "url":       a.get("url"),
                 "published": a.get("published"),
+                "document_type": a.get("document_type", "news"),
+                "entities": entities,
                 "sentiment": s,
             })
             total_score += s["score"] * s["confidence"]
@@ -270,26 +348,64 @@ async def score_symbol(symbol: str, refresh: bool = False):
         pos_count = sum(1 for s in scores if s["label"] == "positive")
         neg_count = sum(1 for s in scores if s["label"] == "negative")
         neu_count = sum(1 for s in scores if s["label"] == "neutral")
+        press_release_count = sum(1 for a in articles if a.get("document_type") == "press_release")
+        entity_summary = merge_entities(scored_articles)
 
         payload = {
             "symbol": sym_upper,
+            "as_of": as_of,
+            "stored_only": stored_only,
             "articles": scored_articles,
             "aggregated": {
                 "label": aggregated_label,
                 "score": round(aggregated_score, 4),
                 "article_count": len(articles),
+                "press_release_count": press_release_count,
                 "positive_count": pos_count,
                 "negative_count": neg_count,
                 "neutral_count": neu_count,
+                "entities": entity_summary,
                 "computed_at": datetime.now().isoformat(),
             }
         }
-        return _cache_put(sym_upper, payload)
+        return _cache_put(cache_key, payload)
     except HTTPException:
         raise
     except Exception as e:
         log.error(f"Symbol sentiment failed for {symbol}: {e}")
         raise HTTPException(500, str(e))
+
+
+@app.get("/sentiment/features/{symbol}")
+async def sentiment_features(symbol: str, as_of: str | None = None, window_days: int = 30):
+    """Timestamp-safe sentiment features for backtests and research.
+
+    The live-data service performs the published_at <= as_of filter before this
+    service scores articles, preventing future news from leaking into a backtest.
+    """
+    payload = await score_symbol(
+        symbol=symbol,
+        refresh=False,
+        as_of=as_of,
+        stored_only=True,
+        limit=max(1, min(window_days * 10, 100)),
+    )
+    agg = payload.get("aggregated") or {}
+    return {
+        "symbol": symbol.upper(),
+        "as_of": as_of,
+        "available": bool(agg),
+        "sentiment_score": agg.get("score", 0),
+        "sentiment_label": agg.get("label", "neutral"),
+        "article_count": agg.get("article_count", 0),
+        "press_release_count": agg.get("press_release_count", 0),
+        "positive_count": agg.get("positive_count", 0),
+        "negative_count": agg.get("negative_count", 0),
+        "neutral_count": agg.get("neutral_count", 0),
+        "entities": agg.get("entities", {"tickers": [], "organizations": [], "keywords": []}),
+        "computed_at": agg.get("computed_at", datetime.now().isoformat()),
+        "leakage_guard": "published_at <= as_of, stored_only=true",
+    }
 
 
 @app.get("/sentiment/feed")
@@ -406,7 +522,8 @@ def root():
         "endpoints": [
             "POST /sentiment/text                    Body: {text}",
             "POST /sentiment/batch                   Body: {texts:[]}",
-            "GET  /sentiment/symbol/{symbol}         Symbol news sentiment",
+            "GET  /sentiment/symbol/{symbol}         Symbol news sentiment (?as_of=&stored_only=)",
+            "GET  /sentiment/features/{symbol}       Timestamp-safe backtest features",
             "GET  /sentiment/feed                    Market feed sentiment",
             "GET  /sentiment/portfolio?symbols=X,Y   Multi-symbol",
         ]

@@ -106,3 +106,44 @@ def test_quote_from_chart_raises_on_empty():
     empty = {"timestamp": [], "indicators": {"quote": [{}]}, "meta": {}}
     with pytest.raises(ValueError):
         svc._quote_from_chart("x", empty)
+
+
+# ─── Finnhub news helpers ─────────────────────────────────────
+
+def test_classify_doc_type_detects_press_release():
+    item = {
+        "category": "company",
+        "source": "PR Newswire",
+        "headline": "Company announces quarterly results",
+        "url": "https://example.com/press-release",
+    }
+    assert svc._classify_doc_type(item) == "press_release"
+
+
+def test_normalize_finnhub_news_preserves_publish_time():
+    article = svc._normalize_finnhub_news("aapl", {
+        "id": 123,
+        "datetime": 1_704_067_200,
+        "headline": "Apple supplier update",
+        "summary": "A timestamped story",
+        "source": "Finnhub",
+        "category": "company",
+        "url": "https://example.com/story",
+    })
+    assert article["symbol"] == "AAPL"
+    assert article["source"] == "finnhub"
+    assert article["source_external_id"] == "123"
+    assert article["published_at"].isoformat().startswith("2024-01-01")
+
+
+def test_chunk_dates_uses_closed_ranges():
+    chunks = list(svc._chunk_dates(
+        datetime(2024, 1, 1).date(),
+        datetime(2024, 1, 5).date(),
+        days=2,
+    ))
+    assert chunks == [
+        (datetime(2024, 1, 1).date(), datetime(2024, 1, 2).date()),
+        (datetime(2024, 1, 3).date(), datetime(2024, 1, 4).date()),
+        (datetime(2024, 1, 5).date(), datetime(2024, 1, 5).date()),
+    ]

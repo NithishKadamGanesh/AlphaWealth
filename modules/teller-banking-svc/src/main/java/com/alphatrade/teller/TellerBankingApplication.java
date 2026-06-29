@@ -123,6 +123,9 @@ class BankingController {
     @Value("${teller.enrollments-path:/data/teller-enrollments.json}")
     private String enrollmentsPath;
 
+    @Value("${teller.accounts-cache-path:/data/teller-accounts-cache.json}")
+    private String accountsCachePath;
+
     @PostConstruct
     void loadEnrollments() {
         Path path = Path.of(enrollmentsPath);
@@ -187,7 +190,15 @@ class BankingController {
                 log.error("Failed to fetch accounts for enrollment: {}", e.getMessage());
             }
         }
-        return all;
+        if (!all.isEmpty()) {
+            persistAccountsCache(all);
+            return all;
+        }
+        List<Map<String, Object>> cached = loadAccountsCache();
+        if (!cached.isEmpty()) {
+            log.warn("Teller accounts unavailable; returning {} cached accounts", cached.size());
+        }
+        return cached;
     }
 
     @GetMapping("/transactions")
@@ -270,7 +281,7 @@ class BankingController {
         return Map.of("enrolled", enrollments.size(), "institutions", new ArrayList<>(enrollments.values()));
     }
 
-    @Scheduled(fixedRate = 600_000)
+    @Scheduled(fixedRate = 600_000, initialDelay = 600_000)
     public void scheduledSync() {
         if (enrollments.isEmpty()) return;
         log.info("Scheduled Teller sync for {} enrollments", enrollments.size());
@@ -326,6 +337,28 @@ class BankingController {
     private void publishToKafka() throws Exception {
         for (var acc : accounts()) {
             kafka.send("teller.balances", (String) acc.get("id"), mapper.writeValueAsString(acc));
+        }
+    }
+
+    private List<Map<String, Object>> loadAccountsCache() {
+        Path path = Path.of(accountsCachePath);
+        if (!Files.exists(path)) return List.of();
+        try {
+            return mapper.readValue(path.toFile(), mapper.getTypeFactory()
+                    .constructCollectionType(ArrayList.class, Map.class));
+        } catch (Exception e) {
+            log.warn("Failed to load Teller accounts cache from {}: {}", accountsCachePath, e.getMessage());
+            return List.of();
+        }
+    }
+
+    private synchronized void persistAccountsCache(List<Map<String, Object>> accounts) {
+        try {
+            Path path = Path.of(accountsCachePath);
+            if (path.getParent() != null) Files.createDirectories(path.getParent());
+            mapper.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), accounts);
+        } catch (Exception e) {
+            log.warn("Failed to persist Teller accounts cache to {}: {}", accountsCachePath, e.getMessage());
         }
     }
 

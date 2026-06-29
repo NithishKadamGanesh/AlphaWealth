@@ -35,7 +35,7 @@ public class ModelInferenceClient {
         try {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("symbol", symbol.toUpperCase());
-            payload.put("candles", candles);
+            payload.put("candles", candles.stream().map(this::toModelCandle).toList());
             String json = mapper.writeValueAsString(payload);
 
             HttpRequest request = HttpRequest.newBuilder()
@@ -55,5 +55,16 @@ public class ModelInferenceClient {
             log.warn("Model inference failed for {}: {}", symbol, e.getMessage());
             return Optional.empty();
         }
+    }
+
+    private Map<String, Object> toModelCandle(Candle candle) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("date", candle.date());
+        out.put("open", candle.open());
+        out.put("high", candle.high());
+        out.put("low", candle.low());
+        out.put("close", candle.close());
+        out.put("volume", candle.volume());
+        return out;
     }
 }

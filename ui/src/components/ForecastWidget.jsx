@@ -12,6 +12,7 @@ const dirVariant = (dir) =>
 
 export const ForecastWidget = ({ symbol }) => {
   const { data, loading, error, generate, reset } = useForecast(symbol);
+  const isFallback = Boolean(data?.fallback);
 
   useEffect(() => { reset(); }, [symbol, reset]);
 
@@ -23,7 +24,9 @@ export const ForecastWidget = ({ symbol }) => {
           <span className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">
             FinGPT-Forecaster — {symbol}
           </span>
-          <Tag variant="accent">GPU — LoRA — 7B</Tag>
+          <Tag variant={isFallback ? "warning" : "accent"}>
+            {isFallback ? "CPU fallback" : "GPU — LoRA — 7B"}
+          </Tag>
         </div>
         {data?.direction && (
           <Tag variant={dirVariant(data.direction)}>
@@ -37,7 +40,7 @@ export const ForecastWidget = ({ symbol }) => {
           <div className="text-xs text-muted mb-3">
             Generate next-week directional forecast for {symbol}.
             Uses recent price action + FinBERT sentiment + indicators.
-            Takes ~10-30s on first run (model loads to GPU).
+            Uses FinGPT on GPU, or a conservative local fallback on CPU-only Docker.
           </div>
           <Button variant="accent" onClick={generate} className="gap-1.5">
             <Icon name="sparkle" size={13} /> Generate Forecast
@@ -48,7 +51,7 @@ export const ForecastWidget = ({ symbol }) => {
       {loading && (
         <div className="p-8 text-center flex items-center justify-center gap-2 text-muted text-xs">
           <Pulse color="accent" />
-          Running FinGPT inference... (~5-30s on RTX 2080 SUPER)
+          Running forecast...
         </div>
       )}
 
@@ -56,7 +59,7 @@ export const ForecastWidget = ({ symbol }) => {
         <div className="p-5 text-xs bg-negative/5">
           <span className="text-negative font-medium">Forecast failed: {error}</span>
           <div className="text-muted mt-1.5">
-            Make sure fingpt-svc is running. First request also downloads ~13GB model.
+            Make sure fingpt-svc is running. True FinGPT also needs GPU access or extra Docker memory.
           </div>
         </div>
       )}

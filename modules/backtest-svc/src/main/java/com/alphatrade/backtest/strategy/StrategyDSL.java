@@ -21,7 +21,7 @@ import java.util.stream.Stream;
  *   "logic": "ALL"
  * }
  *
- * Supported indicators: price, sma, ema, rsi, volume
+ * Supported indicators: price, sma, ema, rsi, volume, lorentzian
  * Supported operators: >, <, >=, <=, crosses_above, crosses_below
  * Logic: ALL (all conditions must be true) or ANY (at least one)
  */
@@ -83,7 +83,7 @@ public class StrategyDSL {
     }
 
     private static boolean evaluateCondition(Condition c, List<Bar> bars, int idx) {
-        double lhs = getIndicatorValue(c.indicator, c.period, bars, idx);
+        double lhs = getIndicatorValue(c, bars, idx);
         double rhs;
         if (c.reference != null && !c.reference.isBlank()) {
             rhs = getIndicatorValue(c.reference, c.refPeriod > 0 ? c.refPeriod : c.period, bars, idx);
@@ -99,14 +99,14 @@ public class StrategyDSL {
             case ">=" -> lhs >= rhs;
             case "<=" -> lhs <= rhs;
             case "crosses_above" -> {
-                double prevLhs = getIndicatorValue(c.indicator, c.period, bars, idx - 1);
+                double prevLhs = getIndicatorValue(c, bars, idx - 1);
                 double prevRhs = c.reference != null
                     ? getIndicatorValue(c.reference, c.refPeriod > 0 ? c.refPeriod : c.period, bars, idx - 1)
                     : c.value;
                 yield prevLhs <= prevRhs && lhs > rhs;
             }
             case "crosses_below" -> {
-                double prevLhs = getIndicatorValue(c.indicator, c.period, bars, idx - 1);
+                double prevLhs = getIndicatorValue(c, bars, idx - 1);
                 double prevRhs = c.reference != null
                     ? getIndicatorValue(c.reference, c.refPeriod > 0 ? c.refPeriod : c.period, bars, idx - 1)
                     : c.value;
@@ -140,8 +140,18 @@ public class StrategyDSL {
         return switch (indicator.toLowerCase()) {
             case "sma", "ema" -> period;
             case "rsi" -> period + 1;
+            case "lorentzian" -> Math.max(30, period + 5);
             default -> 1;
         };
+    }
+
+    private static double getIndicatorValue(Condition c, List<Bar> bars, int idx) {
+        if ("lorentzian".equalsIgnoreCase(c.indicator())) {
+            int lookback = Math.max(30, c.period());
+            int neighbors = Math.max(3, c.refPeriod() > 0 ? c.refPeriod() : 8);
+            return lorentzianScore(bars, idx, lookback, neighbors);
+        }
+        return getIndicatorValue(c.indicator, c.period, bars, idx);
     }
 
     private static double getIndicatorValue(String indicator, int period, List<Bar> bars, int idx) {
@@ -171,8 +181,77 @@ public class StrategyDSL {
                 if (idx < period + 1) yield Double.NaN;
                 yield Strategy.calcRsi(bars, idx, period);
             }
+            case "lorentzian" -> lorentzianScore(bars, idx, Math.max(30, period), 8);
             default -> Double.NaN;
         };
+    }
+
+    /**
+     * Lorentzian nearest-neighbor classifier inspired by the popular TradingView
+     * indicator family. It returns a score in [-1, 1], where positive values mean
+     * similar historical states tended to rise over the next four bars.
+     *
+     * Leakage guard: at idx, candidate neighbors end at idx - horizon, so the
+     * neighbor label is known historically without using future data from idx.
+     */
+    private static double lorentzianScore(List<Bar> bars, int idx, int lookback, int neighbors) {
+        int horizon = 4;
+        if (idx < Math.max(lookback, 30) || idx >= bars.size()) return Double.NaN;
+
+        double[] current = lorentzianFeatures(bars, idx);
+        if (hasNaN(current)) return Double.NaN;
+
+        PriorityQueue<double[]> best = new PriorityQueue<>(Comparator.comparingDouble(a -> -a[0]));
+        int start = Math.max(15, idx - lookback);
+        int end = idx - horizon;
+        for (int j = start; j <= end; j++) {
+            double[] candidate = lorentzianFeatures(bars, j);
+            if (hasNaN(candidate)) continue;
+            double label = Math.signum(bars.get(j + horizon).close() - bars.get(j).close());
+            if (label == 0) continue;
+            double distance = 0;
+            for (int f = 0; f < current.length; f++) {
+                distance += Math.log1p(Math.abs(current[f] - candidate[f]));
+            }
+            best.offer(new double[] { distance, label });
+            if (best.size() > neighbors) best.poll();
+        }
+
+        if (best.isEmpty()) return Double.NaN;
+        double weighted = 0;
+        double weightSum = 0;
+        for (double[] item : best) {
+            double weight = 1.0 / (1.0 + item[0]);
+            weighted += item[1] * weight;
+            weightSum += weight;
+        }
+        return weightSum == 0 ? Double.NaN : weighted / weightSum;
+    }
+
+    private static double[] lorentzianFeatures(List<Bar> bars, int idx) {
+        if (idx < 15) return new double[] { Double.NaN };
+        double close = bars.get(idx).close();
+        double prev = bars.get(idx - 1).close();
+        double close3 = bars.get(idx - 3).close();
+        double close10 = bars.get(idx - 10).close();
+        double vol = bars.get(idx).volume();
+        double vol5 = 0;
+        for (int i = idx - 4; i <= idx; i++) vol5 += bars.get(i).volume();
+        vol5 /= 5.0;
+        return new double[] {
+            prev == 0 ? 0 : (close / prev) - 1.0,
+            close3 == 0 ? 0 : (close / close3) - 1.0,
+            close10 == 0 ? 0 : (close / close10) - 1.0,
+            Strategy.calcRsi(bars, idx, 14) / 100.0,
+            vol5 == 0 ? 0 : (vol / vol5) - 1.0,
+        };
+    }
+
+    private static boolean hasNaN(double[] values) {
+        for (double value : values) {
+            if (Double.isNaN(value) || Double.isInfinite(value)) return true;
+        }
+        return false;
     }
 
     private static List<Condition> parseConditions(List<Map<String, Object>> raw) {

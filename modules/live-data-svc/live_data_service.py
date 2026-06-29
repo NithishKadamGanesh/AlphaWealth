@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote as url_quote
@@ -96,6 +96,97 @@ _fear_greed_cache: dict = {}
 _quote_cache_ttl = 5       # seconds
 _bars_cache_ttl = 300      # seconds
 _fear_greed_ttl = 900      # seconds
+
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
+DB_HOST = os.getenv("DB_HOST", "postgres")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_NAME = os.getenv("DB_NAME", "alphawealth")
+DB_USER = os.getenv("DB_USER", "alphatrade")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "alphatrade123")
+_news_schema_ready = False
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_date(value: str | None, default: date) -> date:
+    if not value:
+        return default
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {value}. Use YYYY-MM-DD.")
+
+
+def _parse_as_of(value: str | None) -> datetime:
+    if not value:
+        return _utc_now()
+    try:
+        if len(value) == 10:
+            return datetime.fromisoformat(value).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid as_of: {value}. Use ISO datetime or YYYY-MM-DD.")
+
+
+def _db_conn():
+    import psycopg2
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        connect_timeout=3,
+    )
+
+
+def _ensure_news_schema() -> bool:
+    global _news_schema_ready
+    if _news_schema_ready:
+        return True
+    try:
+        with _db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS news_articles (
+                        id                  BIGSERIAL PRIMARY KEY,
+                        symbol              VARCHAR(16) NOT NULL,
+                        source              VARCHAR(32) NOT NULL,
+                        source_external_id  VARCHAR(128),
+                        source_name         VARCHAR(128),
+                        category            VARCHAR(64),
+                        document_type       VARCHAR(32) NOT NULL DEFAULT 'news',
+                        title               TEXT NOT NULL,
+                        summary             TEXT,
+                        url                 TEXT,
+                        published_at        TIMESTAMPTZ NOT NULL,
+                        ingested_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        raw                 JSONB
+                    );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_news_articles_source_id
+                        ON news_articles(source, source_external_id, symbol)
+                        WHERE source_external_id IS NOT NULL;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_news_articles_url_symbol
+                        ON news_articles(symbol, url)
+                        WHERE url IS NOT NULL;
+                    CREATE INDEX IF NOT EXISTS idx_news_articles_symbol_published
+                        ON news_articles(symbol, published_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_news_articles_type_published
+                        ON news_articles(document_type, published_at DESC);
+                """)
+        _news_schema_ready = True
+        return True
+    except Exception as e:
+        log.warning(f"News storage unavailable: {e}")
+        return False
+
+
+@app.on_event("startup")
+def _startup_news_schema():
+    _ensure_news_schema()
 
 
 # ─── Models ──────────────────────────────────────────────────
@@ -414,23 +505,257 @@ async def get_sectors():
 
 
 @app.get("/news/{symbol}")
-async def get_news(symbol: str):
+async def get_news(symbol: str, limit: int = 10, as_of: str | None = None, stored_only: bool = False):
     def _fetch():
+        sym = symbol.upper()
+        as_of_dt = _parse_as_of(as_of)
+        if _ensure_news_schema():
+            stored = _read_stored_news(sym, limit=max(1, min(limit, 100)), as_of=as_of_dt)
+            if stored or stored_only:
+                return stored
+        if stored_only:
+            return []
+
         try:
-            ticker = yf.Ticker(symbol)
-            news = ticker.news[:10]
-            return [{
-                "title":     n.get("title", ""),
-                "source":    n.get("publisher", "Yahoo Finance"),
-                "url":       n.get("link", ""),
-                "published": datetime.fromtimestamp(n.get("providerPublishTime", 0)).isoformat(),
-                "summary":   (n.get("summary", "") or "")[:300],
-            } for n in news]
+            ticker = yf.Ticker(sym)
+            news = ticker.news[:limit]
+            return [_normalize_yahoo_news(sym, n) for n in news]
         except Exception as e:
-            log.error(f"News fetch failed for {symbol}: {e}")
+            log.error(f"News fetch failed for {sym}: {e}")
             return []
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, _fetch)
+
+
+def _normalize_yahoo_news(symbol: str, item: dict) -> dict:
+    published_ts = item.get("providerPublishTime") or 0
+    published = datetime.fromtimestamp(published_ts, tz=timezone.utc) if published_ts else _utc_now()
+    return {
+        "symbol": symbol.upper(),
+        "title": item.get("title", ""),
+        "source": item.get("publisher", "Yahoo Finance"),
+        "source_name": item.get("publisher", "Yahoo Finance"),
+        "url": item.get("link", ""),
+        "published": published.isoformat(),
+        "published_at": published.isoformat(),
+        "summary": (item.get("summary", "") or "")[:300],
+        "category": item.get("type", "news"),
+        "document_type": "news",
+    }
+
+
+def _classify_doc_type(item: dict) -> str:
+    haystack = " ".join(str(item.get(k, "") or "") for k in ("category", "source", "headline", "summary", "url")).lower()
+    if "press release" in haystack or "press-release" in haystack or "globenewswire" in haystack or "pr newswire" in haystack:
+        return "press_release"
+    return "news"
+
+
+def _normalize_finnhub_news(symbol: str, item: dict) -> dict:
+    published_ts = item.get("datetime") or 0
+    published = datetime.fromtimestamp(published_ts, tz=timezone.utc) if published_ts else _utc_now()
+    return {
+        "symbol": symbol.upper(),
+        "source": "finnhub",
+        "source_external_id": str(item.get("id")) if item.get("id") is not None else None,
+        "source_name": item.get("source"),
+        "category": item.get("category"),
+        "document_type": _classify_doc_type(item),
+        "title": item.get("headline") or item.get("title") or "",
+        "summary": item.get("summary") or "",
+        "url": item.get("url"),
+        "published_at": published,
+        "published": published.isoformat(),
+        "raw": item,
+    }
+
+
+def _finnhub_company_news(symbol: str, start: date, end: date) -> list[dict]:
+    if not FINNHUB_API_KEY:
+        raise HTTPException(status_code=400, detail="FINNHUB_API_KEY is not configured.")
+    r = requests.get(
+        "https://finnhub.io/api/v1/company-news",
+        params={
+            "symbol": symbol.upper(),
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "token": FINNHUB_API_KEY,
+        },
+        timeout=20,
+    )
+    if r.status_code in (401, 403):
+        raise HTTPException(status_code=401, detail="Finnhub rejected the API key.")
+    r.raise_for_status()
+    payload = r.json()
+    if isinstance(payload, dict) and payload.get("error"):
+        raise HTTPException(status_code=502, detail=f"Finnhub error: {payload['error']}")
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=502, detail="Unexpected Finnhub company-news response.")
+    return [_normalize_finnhub_news(symbol, item) for item in payload if item.get("headline") or item.get("summary")]
+
+
+def _chunk_dates(start: date, end: date, days: int = 30):
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=days - 1), end)
+        yield cursor, chunk_end
+        cursor = chunk_end + timedelta(days=1)
+
+
+def _store_news_articles(articles: list[dict]) -> dict:
+    if not articles or not _ensure_news_schema():
+        return {"inserted": 0, "updated": 0}
+
+    from psycopg2.extras import Json
+
+    inserted = 0
+    updated = 0
+    with _db_conn() as conn:
+        with conn.cursor() as cur:
+            for a in articles:
+                cur.execute("""
+                    INSERT INTO news_articles (
+                        symbol, source, source_external_id, source_name, category,
+                        document_type, title, summary, url, published_at, raw
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source, source_external_id, symbol)
+                    WHERE source_external_id IS NOT NULL
+                    DO UPDATE SET
+                        source_name = EXCLUDED.source_name,
+                        category = EXCLUDED.category,
+                        document_type = EXCLUDED.document_type,
+                        title = EXCLUDED.title,
+                        summary = EXCLUDED.summary,
+                        url = EXCLUDED.url,
+                        published_at = EXCLUDED.published_at,
+                        raw = EXCLUDED.raw
+                    RETURNING (xmax = 0) AS inserted
+                """, (
+                    a["symbol"], a["source"], a.get("source_external_id"),
+                    a.get("source_name"), a.get("category"), a.get("document_type", "news"),
+                    a.get("title", ""), a.get("summary"), a.get("url"), a.get("published_at"),
+                    Json(a.get("raw") or {}),
+                ))
+                if cur.fetchone()[0]:
+                    inserted += 1
+                else:
+                    updated += 1
+    return {"inserted": inserted, "updated": updated}
+
+
+def _row_to_article(row) -> dict:
+    return {
+        "id": row[0],
+        "symbol": row[1],
+        "source": row[2],
+        "source_external_id": row[3],
+        "source_name": row[4],
+        "category": row[5],
+        "document_type": row[6],
+        "title": row[7],
+        "summary": row[8],
+        "url": row[9],
+        "published": row[10].isoformat(),
+        "published_at": row[10].isoformat(),
+        "ingested_at": row[11].isoformat(),
+    }
+
+
+def _read_stored_news(symbol: str, limit: int, as_of: datetime) -> list[dict]:
+    if not _ensure_news_schema():
+        return []
+    with _db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, symbol, source, source_external_id, source_name, category,
+                       document_type, title, summary, url, published_at, ingested_at
+                FROM news_articles
+                WHERE symbol = %s
+                  AND published_at <= %s
+                ORDER BY published_at DESC
+                LIMIT %s
+            """, (symbol.upper(), as_of, limit))
+            return [_row_to_article(row) for row in cur.fetchall()]
+
+
+@app.post("/news/ingest/{symbol}")
+async def ingest_symbol_news(
+    symbol: str,
+    years: int = 3,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_chunks: int = 40,
+):
+    """Backfill Finnhub company news into timestamp-safe storage.
+
+    Uses publish timestamps as the backtest availability boundary. Finnhub plan
+    limits still apply; free plans may return a shorter history than requested.
+    """
+    def _ingest():
+        sym = symbol.upper()
+        end = _parse_date(to_date, _utc_now().date())
+        start = _parse_date(from_date, end - timedelta(days=max(1, years) * 365))
+        if start > end:
+            raise HTTPException(status_code=400, detail="from_date must be before to_date.")
+        if not _ensure_news_schema():
+            raise HTTPException(status_code=503, detail="News storage is unavailable.")
+
+        fetched = []
+        chunks = list(_chunk_dates(start, end))[:max(1, max_chunks)]
+        for chunk_start, chunk_end in chunks:
+            fetched.extend(_finnhub_company_news(sym, chunk_start, chunk_end))
+        stored = _store_news_articles(fetched)
+        return {
+            "symbol": sym,
+            "source": "finnhub",
+            "requested_from": start.isoformat(),
+            "requested_to": end.isoformat(),
+            "chunks": len(chunks),
+            "fetched": len(fetched),
+            **stored,
+            "note": "Backtests must query with as_of and only use published_at <= decision time.",
+        }
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, _ingest)
+
+
+@app.get("/news/features/{symbol}")
+async def news_features(symbol: str, as_of: str | None = None, window_days: int = 7):
+    def _features():
+        sym = symbol.upper()
+        end = _parse_as_of(as_of)
+        start = end - timedelta(days=max(1, min(window_days, 1_095)))
+        if not _ensure_news_schema():
+            return {"symbol": sym, "available": False, "error": "news storage unavailable"}
+        with _db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        COUNT(*)::INT AS article_count,
+                        COUNT(*) FILTER (WHERE document_type = 'press_release')::INT AS press_release_count,
+                        COUNT(DISTINCT source_name)::INT AS source_count,
+                        MAX(published_at) AS latest_published_at
+                    FROM news_articles
+                    WHERE symbol = %s
+                      AND published_at > %s
+                      AND published_at <= %s
+                """, (sym, start, end))
+                count, pr_count, source_count, latest = cur.fetchone()
+        return {
+            "symbol": sym,
+            "available": True,
+            "as_of": end.isoformat(),
+            "window_days": window_days,
+            "article_count": count,
+            "press_release_count": pr_count,
+            "source_count": source_count,
+            "latest_published_at": latest.isoformat() if latest else None,
+        }
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, _features)
 
 
 @app.get("/news")
@@ -534,7 +859,13 @@ async def ws_quotes(websocket: WebSocket):
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "alphawealth-live-data", "data_source": "yfinance"}
+    return {
+        "status": "healthy",
+        "service": "alphawealth-live-data",
+        "data_source": "yfinance",
+        "finnhub_configured": bool(FINNHUB_API_KEY),
+        "news_storage": "ready" if _ensure_news_schema() else "unavailable",
+    }
 
 
 @app.get("/")
@@ -550,7 +881,10 @@ def root():
             "GET  /api/marketdata/candles/{symbol}/weekly (multi-timeframe bridge)",
             "GET  /company/{symbol}",
             "GET  /movers", "GET  /indices", "GET  /sectors",
-            "GET  /news/{symbol}", "GET  /news",
+            "GET  /news/{symbol}?as_of=YYYY-MM-DD&stored_only=false",
+            "POST /news/ingest/{symbol}?years=3",
+            "GET  /news/features/{symbol}?as_of=YYYY-MM-DD&window_days=7",
+            "GET  /news",
             "GET  /fear-greed", "GET  /crypto", "GET  /forex",
             "WS   /ws/quotes",
         ]

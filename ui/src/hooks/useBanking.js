@@ -10,15 +10,20 @@ import { computeSpendingCategories } from "../lib/banking";
 const URL = import.meta.env.VITE_TELLER_URL || "http://localhost:8092";
 const TIMEOUT_MS = 6000;
 
-const mockAccounts = [
-  { id: "chk-1", name: "Chase Checking", type: "depository", subtype: "checking", balance: 8450, available: 8450, currency: "USD" },
-  { id: "sav-1", name: "Chase Savings",  type: "depository", subtype: "savings",  balance: 24000, available: 24000, currency: "USD" },
-];
+function uniqueById(items) {
+  const seen = new Set();
+  return items.filter(item => {
+    const key = item.id || `${item.institution}:${item.name}:${item.subtype}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 export function useBanking() {
-  const [accounts, setAccounts] = useState(mockAccounts);
-  const [transactions, setTransactions] = useState(mockTx);
-  const [categories, setCategories] = useState(mockCats);
+  const [accounts, setAccounts] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [dataMode, setDataMode] = useState("simulated");
   const [lastError, setLastError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
@@ -48,12 +53,16 @@ export function useBanking() {
 
       if (accRes.ok) {
         const arr = await accRes.json();
-        if (Array.isArray(arr) && arr.length > 0) { setAccounts(arr); gotAny = true; }
+        if (Array.isArray(arr)) {
+          const uniqueAccounts = uniqueById(arr);
+          setAccounts(uniqueAccounts);
+          if (uniqueAccounts.length > 0) gotAny = true;
+        }
       }
 
       if (txRes.ok) {
         const arr = await txRes.json();
-        if (Array.isArray(arr) && arr.length > 0) {
+        if (Array.isArray(arr)) {
           const formatted = arr.map(t => ({
             id:       t.id,
             merchant: t.merchant || t.name || "Unknown",
@@ -65,7 +74,7 @@ export function useBanking() {
           }));
           setTransactions(formatted);
           setCategories(computeSpendingCategories(formatted));
-          gotAny = true;
+          if (formatted.length > 0) gotAny = true;
         }
       }
 
@@ -87,6 +96,9 @@ export function useBanking() {
           console.warn(`[useBanking] banking-svc unreachable. Showing seed data. Reason: ${msg}`);
           warnedRef.current = true;
         }
+        setAccounts([]);
+        setTransactions(mockTx);
+        setCategories(mockCats);
         setDataMode("simulated");
       }
     } finally {

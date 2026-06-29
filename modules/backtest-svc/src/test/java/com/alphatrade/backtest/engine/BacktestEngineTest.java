@@ -3,10 +3,12 @@ package com.alphatrade.backtest.engine;
 import com.alphatrade.backtest.model.Bar;
 import com.alphatrade.backtest.model.BacktestResult;
 import com.alphatrade.backtest.strategy.Strategy;
+import com.alphatrade.backtest.strategy.StrategyDSL;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -93,5 +95,36 @@ class BacktestEngineTest {
         BacktestResult r = engine.run(barsFromCloses(closes), Strategy.smaCrossover(3, 8),
                 "TEST", 10000, 0.5, 0.5, 5);
         assertThat(r.winRate()).isBetween(0.0, 100.0);
+    }
+
+    @Test
+    void dslLorentzianIndicatorRunsWithoutLookaheadFailure() {
+        double[] closes = new double[140];
+        for (int i = 0; i < closes.length; i++) {
+            closes[i] = 100 + i * 0.2 + 4 * Math.sin(i / 5.0);
+        }
+        Strategy strategy = StrategyDSL.fromMap(Map.of(
+            "name", "lorentzian_smoke",
+            "logic", "ALL",
+            "entry", List.of(Map.of(
+                "indicator", "lorentzian",
+                "period", 60,
+                "refPeriod", 8,
+                "operator", ">",
+                "value", 0.15
+            )),
+            "exit", List.of(Map.of(
+                "indicator", "lorentzian",
+                "period", 60,
+                "refPeriod", 8,
+                "operator", "<",
+                "value", -0.15
+            ))
+        ));
+
+        BacktestResult r = engine.run(barsFromCloses(closes), strategy, "TEST", 10000, 0.5, 0.5, 5);
+
+        assertThat(r.endingCapital()).isFinite();
+        assertThat(r.equityCurve()).hasSize(closes.length);
     }
 }

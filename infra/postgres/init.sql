@@ -72,6 +72,32 @@ CREATE TABLE IF NOT EXISTS technical_signals (
 SELECT create_hypertable('technical_signals', 'ts', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol_ts ON technical_signals(symbol, ts DESC);
 
+CREATE TABLE IF NOT EXISTS news_articles (
+    id                  BIGSERIAL PRIMARY KEY,
+    symbol              VARCHAR(16) NOT NULL,
+    source              VARCHAR(32) NOT NULL,
+    source_external_id  VARCHAR(128),
+    source_name         VARCHAR(128),
+    category            VARCHAR(64),
+    document_type       VARCHAR(32) NOT NULL DEFAULT 'news',
+    title               TEXT NOT NULL,
+    summary             TEXT,
+    url                 TEXT,
+    published_at        TIMESTAMPTZ NOT NULL,
+    ingested_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    raw                 JSONB
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_news_articles_source_id
+    ON news_articles(source, source_external_id, symbol)
+    WHERE source_external_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_news_articles_url_symbol
+    ON news_articles(symbol, url)
+    WHERE url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_news_articles_symbol_published
+    ON news_articles(symbol, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_articles_type_published
+    ON news_articles(document_type, published_at DESC);
+
 CREATE TABLE IF NOT EXISTS backtest_results (
     id             BIGSERIAL PRIMARY KEY,
     strategy       VARCHAR(64) NOT NULL,
@@ -338,4 +364,3 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN NULL; END;
     BEGIN PERFORM add_compression_policy('net_worth_snapshots', INTERVAL '90 days'); EXCEPTION WHEN OTHERS THEN NULL; END;
 END $$;
-
