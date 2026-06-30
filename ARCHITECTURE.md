@@ -77,7 +77,6 @@ connector (e.g. IBKR FIX or REST) rather than the old simulator.
   sentiment scores, forecasts, and net-worth snapshots
 - TimescaleDB / Postgres (5432): persistent storage for net worth snapshots,
   positions, and transactions
-- Redis (6379): cache layer
 - Prometheus (9090) + Grafana (3001): metrics and dashboards
 
 ## Source of truth for service ports
@@ -87,7 +86,6 @@ connector (e.g. IBKR FIX or REST) rather than the old simulator.
 | 3000  | ui                  | default  |
 | 3001  | grafana             | default  |
 | 5432  | postgres            | default  |
-| 6379  | redis               | default  |
 | 8088  | analysis-svc        | default  |
 | 8089  | backtest-svc        | default  |
 | 8090  | model-svc           | default  |

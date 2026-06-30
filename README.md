@@ -20,7 +20,6 @@ AlphaWealth is a polyglot microservice stack — each language is used for what 
 | **JavaScript / React** — the experience | React + Vite | The 9-page UI: charts, the Markets terminal, the Opportunities scanner, evidence panels, portfolio/banking views, and the AI advisor chat. It displays decisions, evidence, and controls — the heavy finance math lives in C++. |
 | **PostgreSQL / TimescaleDB** | durable data | Users' watchlists, stored signals, historical news metadata, net-worth snapshots, and time-series application data. |
 | **Kafka (Redpanda)** | event flow | Event bus for IBKR positions, banking transactions, net-worth snapshots, and "new signal" events — produced and consumed across services (`net.worth.snapshots`, `banking.transactions`, `ibkr.*`, `teller.balances`). |
-| **Redis** | fast cache | Provisioned for latest-price / scan-result caching and short-lived state. Reserved capacity — not yet wired into the services. |
 | **Ollama** | local LLM | Llama 3.1 served locally so the AI advisor works for free, with cloud providers (Claude / OpenAI / Gemini) as routed alternatives. |
 | **Prometheus + Grafana** | observability | Service health, latency, GPU/CPU/memory, and data-freshness dashboards. |
 

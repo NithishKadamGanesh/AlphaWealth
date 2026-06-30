@@ -53,17 +53,6 @@ services:
       timeout: 3s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    container_name: alphawealth-redis
-    ports: ["6379:6379"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   # ============================================================
   # OLLAMA - Local LLM with GPU acceleration (RTX 2080 SUPER 8GB)
   # ============================================================
