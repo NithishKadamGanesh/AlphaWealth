@@ -5,8 +5,7 @@ import { Command } from "cmdk";
 import { useEffect } from "react";
 import {
   LayoutDashboard, TrendingUp, Briefcase, LineChart, Wallet,
-  Sparkles, Target, Settings as SettingsIcon, Puzzle, CalendarDays,
-  Scale, FlaskConical, Moon, Sun, Search,
+  Sparkles, Target, Settings as SettingsIcon, Zap, Search,
 } from "lucide-react";
 
 const COMMANDS = [
@@ -17,10 +16,7 @@ const COMMANDS = [
   { group: "Navigate", id: "banking",   label: "Go to Banking",   icon: Wallet },
   { group: "Navigate", id: "ai",        label: "Open AI Advisor", icon: Sparkles, hint: "Ask anything" },
   { group: "Navigate", id: "fire",      label: "FIRE calculator", icon: Target },
-  { group: "Research", id: "patterns",    label: "Pattern detection", icon: Puzzle },
-  { group: "Research", id: "seasonality", label: "Seasonality",       icon: CalendarDays },
-  { group: "Research", id: "options",     label: "Options analysis",  icon: Scale },
-  { group: "Research", id: "backtest",    label: "Backtest",          icon: FlaskConical },
+  { group: "Research", id: "opportunities", label: "Find opportunities", icon: Zap },
   { group: "System",   id: "settings",    label: "Settings",          icon: SettingsIcon },
 ];
 

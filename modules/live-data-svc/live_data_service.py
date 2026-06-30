@@ -217,6 +217,22 @@ class CompanyProfile(BaseModel):
     employees: Optional[int]
     website: Optional[str]
     country: Optional[str]
+    # Financial metrics
+    marketCap: Optional[float] = None
+    peRatio: Optional[float] = None
+    eps: Optional[float] = None
+    revenue: Optional[float] = None
+    grossMargin: Optional[float] = None
+    profitMargin: Optional[float] = None
+    debtToEquity: Optional[float] = None
+    dividendYield: Optional[float] = None
+    fiftyTwoWeekHigh: Optional[float] = None
+    fiftyTwoWeekLow: Optional[float] = None
+    avgVolume: Optional[float] = None
+    beta: Optional[float] = None
+    # Earnings
+    nextEarningsDate: Optional[str] = None
+    earningsDaysOut: Optional[int] = None
 
 
 # ─── Live Quotes ─────────────────────────────────────────────
@@ -444,8 +460,25 @@ async def candles_weekly_compat(symbol: str, period: str = "5y"):
 @app.get("/company/{symbol}", response_model=CompanyProfile)
 async def get_company(symbol: str):
     def _fetch():
+        from datetime import date, timedelta
         ticker = yf.Ticker(symbol)
         info = ticker.info
+
+        # Next earnings date
+        next_earnings = None
+        earnings_days_out = None
+        try:
+            cal = ticker.calendar
+            if cal is not None and not cal.empty:
+                ed_col = [c for c in cal.columns if "Earnings Date" in str(c)]
+                if ed_col:
+                    ed_val = cal[ed_col[0]].iloc[0]
+                    if hasattr(ed_val, "date"):
+                        next_earnings = str(ed_val.date())
+                        earnings_days_out = (ed_val.date() - date.today()).days
+        except Exception:
+            pass
+
         return {
             "symbol":      symbol.upper(),
             "name":        info.get("longName", info.get("shortName", symbol)),
@@ -455,6 +488,21 @@ async def get_company(symbol: str):
             "employees":   info.get("fullTimeEmployees"),
             "website":     info.get("website"),
             "country":     info.get("country"),
+            # Financial metrics
+            "marketCap":        info.get("marketCap"),
+            "peRatio":          info.get("trailingPE") or info.get("forwardPE"),
+            "eps":              info.get("trailingEps"),
+            "revenue":          info.get("totalRevenue"),
+            "grossMargin":      info.get("grossMargins"),
+            "profitMargin":     info.get("profitMargins"),
+            "debtToEquity":     info.get("debtToEquity"),
+            "dividendYield":    info.get("dividendYield"),
+            "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+            "fiftyTwoWeekLow":  info.get("fiftyTwoWeekLow"),
+            "avgVolume":        info.get("averageVolume"),
+            "beta":             info.get("beta"),
+            "nextEarningsDate": next_earnings,
+            "earningsDaysOut":  earnings_days_out,
         }
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, _fetch)
@@ -855,6 +903,160 @@ async def ws_quotes(websocket: WebSocket):
         log.info("WebSocket disconnected")
     except Exception as e:
         log.error(f"WebSocket error: {e}")
+
+
+@app.get("/earnings/{symbol}")
+async def get_earnings_date(symbol: str):
+    """Return the next earnings date and days until it for catalyst-risk scoring."""
+    def _fetch():
+        from datetime import date
+        ticker = yf.Ticker(symbol.upper())
+        try:
+            cal = ticker.calendar
+            if cal is not None and not cal.empty:
+                ed_col = [c for c in cal.columns if "Earnings Date" in str(c)]
+                if ed_col:
+                    ed_val = cal[ed_col[0]].iloc[0]
+                    if hasattr(ed_val, "date"):
+                        days_out = (ed_val.date() - date.today()).days
+                        return {
+                            "symbol":          symbol.upper(),
+                            "nextEarningsDate": str(ed_val.date()),
+                            "daysOut":          days_out,
+                            "catalystRisk":     days_out <= 14 if days_out is not None else False,
+                            "catalystLabel":    f"Earnings in {days_out}d" if days_out is not None and days_out >= 0 else "Earnings passed",
+                        }
+        except Exception as e:
+            log.warning(f"Earnings date fetch failed for {symbol}: {e}")
+        return {"symbol": symbol.upper(), "nextEarningsDate": None, "daysOut": None, "catalystRisk": False}
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, _fetch)
+
+
+@app.get("/intraday/{symbol}/rvol")
+async def get_intraday_rvol(symbol: str, sessions: int = 14):
+    """
+    Compute first-5-minute relative volume for the opening RVOL scanner.
+
+    Returns:
+        symbol, openRvol, openRangeHigh, openRangeLow, breakoutDirection,
+        followThrough, price, riskFlags
+    """
+    try:
+        import yfinance as yf
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        import statistics
+
+        tk = yf.Ticker(symbol.upper())
+
+        # Try to gather enough 5-minute sessions for a stable RVOL baseline.
+        hist_5m = tk.history(period="60d", interval="5m")
+        if hist_5m.empty:
+            hist_5m = tk.history(period="5d", interval="5m")
+        if hist_5m.empty:
+            return {"symbol": symbol, "error": "No intraday data available"}
+
+        # Group bars by trading date
+        hist_5m.index = hist_5m.index.tz_convert("America/New_York") if hist_5m.index.tz else hist_5m.index
+        hist_5m["date"] = hist_5m.index.date
+        dates = sorted(hist_5m["date"].unique())
+
+        # Collect opening (9:30–9:35) bars per session
+        opening_vols = []
+        for d in dates:
+            day_bars = hist_5m[hist_5m["date"] == d]
+            if day_bars.empty:
+                continue
+            # First bar of the session
+            first_bar = day_bars.iloc[0]
+            opening_vols.append(float(first_bar["Volume"]))
+
+        if len(opening_vols) < 2:
+            return {"symbol": symbol, "error": "Insufficient intraday history"}
+
+        # Average opening volume over prior sessions (exclude today's if market open)
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        today_bars = hist_5m[hist_5m["date"] == today] if today in dates else None
+        prior_vols = opening_vols[:-1] if (today_bars is not None and not today_bars.empty) else opening_vols
+        if not prior_vols:
+            prior_vols = opening_vols
+
+        avg_open_vol = statistics.mean(prior_vols[-sessions:]) if prior_vols else 1
+        current_open_vol = opening_vols[-1] if opening_vols else 0
+        open_rvol = round(current_open_vol / avg_open_vol, 2) if avg_open_vol > 0 else 0
+
+        # Opening range high/low (first bar of latest session)
+        latest_date = dates[-1]
+        latest_day = hist_5m[hist_5m["date"] == latest_date]
+        first_bar_latest = latest_day.iloc[0]
+        or_high = float(first_bar_latest["High"])
+        or_low  = float(first_bar_latest["Low"])
+
+        # Breakout direction: check second bar if available
+        breakout_direction = "INSIDE"
+        follow_through = False
+        if len(latest_day) > 1:
+            second_bar = latest_day.iloc[1]
+            if float(second_bar["Close"]) > or_high:
+                breakout_direction = "UP"
+                follow_through = len(latest_day) > 2 and float(latest_day.iloc[2]["Close"]) > or_high
+            elif float(second_bar["Close"]) < or_low:
+                breakout_direction = "DOWN"
+                follow_through = len(latest_day) > 2 and float(latest_day.iloc[2]["Close"]) < or_low
+
+        # Current price
+        current_price = float(latest_day.iloc[-1]["Close"]) if not latest_day.empty else 0
+
+        # ATR(14) filter using daily data
+        atr_value = None
+        try:
+            daily = tk.history(period="1mo", interval="1d")
+            if len(daily) >= 14:
+                tr_list = []
+                for i in range(1, len(daily)):
+                    high = float(daily["High"].iloc[i])
+                    low  = float(daily["Low"].iloc[i])
+                    prev_close = float(daily["Close"].iloc[i - 1])
+                    tr_list.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+                atr_value = round(sum(tr_list[-14:]) / 14, 2)
+        except Exception:
+            pass
+
+        # Risk flags
+        risk_flags = []
+        info = {}
+        try:
+            info = tk.fast_info
+        except Exception:
+            pass
+        avg_vol = getattr(info, "three_month_average_volume", None) or getattr(info, "volume", None)
+        if avg_vol and avg_vol < 1_500_000:
+            risk_flags.append("Low average volume (<1.5M)")
+        if current_price < 5:
+            risk_flags.append("Price below $5")
+        if open_rvol < 1.5:
+            risk_flags.append("RVOL below 1.5× threshold")
+        if atr_value is not None and current_price > 0 and (atr_value / current_price) < 0.01:
+            risk_flags.append(f"Low ATR ({atr_value:.2f}) — limited intraday range")
+
+        return {
+            "symbol":           symbol.upper(),
+            "openRvol":         open_rvol,
+            "openRangeHigh":    round(or_high, 2),
+            "openRangeLow":     round(or_low, 2),
+            "breakoutDirection": breakout_direction,
+            "followThrough":    follow_through,
+            "price":            round(current_price, 2),
+            "avgOpenVolume":    round(avg_open_vol),
+            "currentOpenVolume": round(current_open_vol),
+            "sessionsUsed":     len(prior_vols[-sessions:]),
+            "riskFlags":        risk_flags,
+            "atr14":            atr_value,
+        }
+    except Exception as e:
+        log.error(f"Intraday RVOL error for {symbol}: {e}")
+        return {"symbol": symbol, "error": str(e)}
 
 
 @app.get("/health")

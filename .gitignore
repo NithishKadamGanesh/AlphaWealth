@@ -25,6 +25,7 @@ out/
 
 # IBKR Client Portal Gateway binary distribution
 clientportal/
+clientportal.gw/
 
 # secrets / credentials
 secrets/

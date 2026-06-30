@@ -420,6 +420,244 @@ public class AnalysisController {
         return ResponseEntity.ok(Map.of("spot", spot, "days", days, "vol", vol, "chain", chain));
     }
 
+    /**
+     * Aggregated research brief for a symbol.
+     * Combines signal, patterns, levels, seasonality, multi-timeframe, and regime into one response.
+     * Frontend uses this to populate the Stock Research Brief view.
+     */
+    @GetMapping("/research-brief/{symbol}")
+    public ResponseEntity<?> researchBrief(@PathVariable String symbol) {
+        try {
+            String sym = symbol.toUpperCase();
+            List<Candle> candles = getCachedCandles(sym);
+            if (candles.isEmpty()) return noData(sym);
+
+            // Gather all evidence concurrently (best-effort: fail fast per module)
+            Map<String, Object> brief = new java.util.LinkedHashMap<>();
+            brief.put("symbol", sym);
+            brief.put("generatedAt", Instant.now().toString());
+
+            try { brief.put("signal",      signalGenerator.generate(sym, candles));         } catch (Exception e) { brief.put("signal", null); }
+            try { brief.put("patterns",    patternDetector.detectAll(candles));             } catch (Exception e) { brief.put("patterns", List.of()); }
+            try { brief.put("levels",      srDetector.detect(candles));                     } catch (Exception e) { brief.put("levels", Map.of()); }
+            try { brief.put("seasonality", seasonalityEngine.analyze(candles));             } catch (Exception e) { brief.put("seasonality", Map.of()); }
+
+            // Multi-timeframe (weekly)
+            try {
+                List<Candle> weekly = fetchCandlesFromUrl(marketDataUrl + "/api/marketdata/candles/" + sym + "/weekly");
+                if (weekly != null && !weekly.isEmpty()) {
+                    brief.put("weeklySignal", signalGenerator.generate(sym, weekly));
+                }
+            } catch (Exception e) { brief.put("weeklySignal", null); }
+
+            // Regime via C++ proxy
+            try { brief.put("regime", fetchRegime(candles)); } catch (Exception e) { brief.put("regime", null); }
+
+            // Verdict based on aggregated signals
+            brief.put("verdict", deriveVerdict(brief));
+
+            return ResponseEntity.ok(brief);
+        } catch (Exception e) {
+            log.error("research-brief failed for {}: {}", symbol, e.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage(), "symbol", symbol));
+        }
+    }
+
+    private String deriveVerdict(Map<String, Object> brief) {
+        Object signalObj = brief.get("signal");
+        String bias = "NEUTRAL";
+        double conf = 50.0;
+
+        if (signalObj instanceof SignalGenerator.TradeSignal sig) {
+            bias = String.valueOf(sig.action()).toUpperCase();
+            conf = sig.confidence() <= 1 ? sig.confidence() * 100 : sig.confidence();
+        } else if (signalObj instanceof Map<?, ?> sig) {
+            Object biasObj = sig.get("bias");
+            if (biasObj == null) biasObj = sig.get("direction");
+            if (biasObj == null) biasObj = sig.get("action");
+            bias = biasObj != null ? biasObj.toString().toUpperCase() : "NEUTRAL";
+            Object confObj = sig.get("confidence");
+            conf = confObj instanceof Number n ? n.doubleValue() : 50.0;
+            if (conf <= 1) conf *= 100;
+        } else {
+            return "Wait";
+        }
+
+        boolean bullish = bias.contains("BULL") || bias.equals("BUY") || bias.equals("STRONG_BUY");
+        boolean bearish = bias.contains("BEAR") || bias.equals("SELL") || bias.equals("STRONG_SELL");
+        if (bullish && conf >= 70) return "Strong Watch";
+        if (bullish && conf >= 50) return "Possible Entry";
+        if (bearish) return "Avoid";
+        return "Wait";
+    }
+
+    private String fetchRegime(List<Candle> candles) {
+        if (candles.size() < 25) return null;
+        try {
+            StringBuilder closes = new StringBuilder("[");
+            for (int i = 0; i < candles.size(); i++) {
+                if (i > 0) closes.append(",");
+                closes.append(candles.get(i).close());
+            }
+            closes.append("]");
+            String body = "{\"closes\":" + closes + "}";
+
+            HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(cppEngineUrl + "/regime"))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(3))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+            HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                JsonNode node = mapper.readTree(resp.body());
+                return node.path("regime").asText(null);
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * Generate actionable options trade ideas for a symbol.
+     * Uses Black-Scholes pricing with heuristic liquidity scoring.
+     * Real option chain integration can replace this when a market data subscription is available.
+     */
+    @GetMapping("/options/ideas/{symbol}")
+    public ResponseEntity<?> optionsIdeas(
+            @PathVariable String symbol,
+            @RequestParam(defaultValue = "150") double spot,
+            @RequestParam(defaultValue = "0.3")  double vol,
+            @RequestParam(defaultValue = "0.05") double rate,
+            @RequestParam(defaultValue = "35")   double dte) {
+
+        double step = spot > 200 ? 5 : spot > 50 ? 2.5 : 1;
+        double atm  = Math.round(spot / step) * step;
+
+        // Liquidity heuristic: higher-priced, liquid names score higher
+        double liqBase = spot > 100 ? 8.0 : spot > 30 ? 6.0 : 4.0;
+
+        List<Map<String, Object>> ideas = new ArrayList<>();
+
+        // 1. Long call (directional, 0.40 delta target)
+        double callStrike = atm + step;
+        var call = optionsEngine.price("CALL", spot, callStrike, dte, vol, rate);
+        double callPrem = extractPrice(call);
+        if (callPrem > 0.5) {
+            ideas.add(Map.of(
+                "structure",     "Long Call",
+                "direction",     "Bullish",
+                "legs",          symbol + " $" + fmt(callStrike) + "C exp ~" + (int) dte + "d",
+                "dte",           (int) dte,
+                "maxLoss",       fmt(callPrem * 100),
+                "maxProfit",     "Unlimited",
+                "breakeven",     fmt(callStrike + callPrem),
+                "liquidityScore", fmt1(liqBase),
+                "rationale",     "Defined-risk bullish play. Profits if " + symbol + " rises above $" + fmt(callStrike + callPrem) + " at expiry.",
+                "invalidation",  "Close below $" + fmt(callStrike - spot * 0.05) + " or implied vol collapse before expiry."
+            ));
+        }
+
+        // 2. Call debit spread (directional, capped risk/reward)
+        double longCallK  = atm + step;
+        double shortCallK = atm + step * 4;
+        var longCall  = optionsEngine.price("CALL", spot, longCallK,  dte, vol, rate);
+        var shortCall = optionsEngine.price("CALL", spot, shortCallK, dte, vol, rate);
+        double netDebit = extractPrice(longCall) - extractPrice(shortCall);
+        double maxProfit = (shortCallK - longCallK) - netDebit;
+        if (netDebit > 0.3 && maxProfit > netDebit) {
+            ideas.add(Map.of(
+                "structure",     "Call Debit Spread",
+                "direction",     "Bullish",
+                "legs",          "Buy $" + fmt(longCallK) + "C / Sell $" + fmt(shortCallK) + "C exp ~" + (int) dte + "d",
+                "dte",           (int) dte,
+                "maxLoss",       fmt(netDebit * 100),
+                "maxProfit",     fmt(maxProfit * 100),
+                "breakeven",     fmt(longCallK + netDebit),
+                "liquidityScore", fmt1(liqBase + 0.5),
+                "rationale",     "Controlled cost bullish play. Risk-reward " + fmt1(maxProfit / netDebit) + ":1. Max profit above $" + fmt(shortCallK) + ".",
+                "invalidation",  "Close below $" + fmt(longCallK - step) + " or time decay erodes position before move materialises."
+            ));
+        }
+
+        // 3. Covered call (income on existing shares)
+        double ccStrike = atm + step * 2;
+        var ccCall = optionsEngine.price("CALL", spot, ccStrike, dte, vol, rate);
+        double ccPrem = extractPrice(ccCall);
+        if (ccPrem > 0.3) {
+            ideas.add(Map.of(
+                "structure",     "Covered Call",
+                "direction",     "Neutral/Income",
+                "legs",          "Sell $" + fmt(ccStrike) + "C exp ~" + (int) dte + "d (requires 100 shares)",
+                "dte",           (int) dte,
+                "maxLoss",       "Cost basis of shares minus premium",
+                "maxProfit",     fmt(ccPrem * 100),
+                "breakeven",     fmt(spot - ccPrem),
+                "liquidityScore", fmt1(liqBase),
+                "rationale",     "Collect $" + fmt(ccPrem * 100) + " premium. Shares called away above $" + fmt(ccStrike) + ". Fits flat-to-slightly-bullish outlook.",
+                "invalidation",  "Sharp move above $" + fmt(ccStrike) + " before expiry — caps upside. Consider rolling if stock approaches strike."
+            ));
+        }
+
+        // 4. Cash-secured put (income/acquisition)
+        double cspStrike = atm - step * 2;
+        var cspPut = optionsEngine.price("PUT", spot, cspStrike, dte, vol, rate);
+        double cspPrem = extractPrice(cspPut);
+        if (cspPrem > 0.2) {
+            ideas.add(Map.of(
+                "structure",     "Cash-Secured Put",
+                "direction",     "Neutral/Acquisition",
+                "legs",          "Sell $" + fmt(cspStrike) + "P exp ~" + (int) dte + "d (requires $" + fmt(cspStrike * 100) + " cash)",
+                "dte",           (int) dte,
+                "maxLoss",       fmt((cspStrike - cspPrem) * 100),
+                "maxProfit",     fmt(cspPrem * 100),
+                "breakeven",     fmt(cspStrike - cspPrem),
+                "liquidityScore", fmt1(liqBase),
+                "rationale",     "Collect $" + fmt(cspPrem * 100) + " premium. Acquire shares at $" + fmt(cspStrike) + " effective cost if assigned.",
+                "invalidation",  "Earnings or news event causes a gap below $" + fmt(cspStrike - cspPrem) + ". Avoid if catalyst is within DTE window."
+            ));
+        }
+
+        // 5. Put debit spread (bearish, defined risk)
+        double longPutK  = atm - step;
+        double shortPutK = atm - step * 4;
+        var longPut  = optionsEngine.price("PUT", spot, longPutK,  dte, vol, rate);
+        var shortPut = optionsEngine.price("PUT", spot, shortPutK, dte, vol, rate);
+        double putDebit = extractPrice(longPut) - extractPrice(shortPut);
+        double putMaxProfit = (longPutK - shortPutK) - putDebit;
+        if (putDebit > 0.2 && putMaxProfit > putDebit) {
+            ideas.add(Map.of(
+                "structure",     "Put Debit Spread",
+                "direction",     "Bearish",
+                "legs",          "Buy $" + fmt(longPutK) + "P / Sell $" + fmt(shortPutK) + "P exp ~" + (int) dte + "d",
+                "dte",           (int) dte,
+                "maxLoss",       fmt(putDebit * 100),
+                "maxProfit",     fmt(putMaxProfit * 100),
+                "breakeven",     fmt(longPutK - putDebit),
+                "liquidityScore", fmt1(liqBase + 0.5),
+                "rationale",     "Defined-risk bearish hedge. Risk-reward " + fmt1(putMaxProfit / putDebit) + ":1."
+            ));
+        }
+
+        if (ideas.isEmpty()) {
+            return ResponseEntity.ok(Map.of("ideas", List.of(), "message", "No high-quality ideas at current vol/price parameters."));
+        }
+        return ResponseEntity.ok(ideas);
+    }
+
+    private double extractPrice(Object priced) {
+        if (priced instanceof OptionsEngine.OptionPrice p) {
+            return p.price();
+        }
+        if (priced instanceof Map<?, ?> m) {
+            Object p = m.get("price"); if (p instanceof Number n) return n.doubleValue();
+            Object v = m.get("value"); if (v instanceof Number n) return n.doubleValue();
+        }
+        return 0;
+    }
+
+    private String fmt(double v)  { return String.format("%.2f", v); }
+    private String fmt1(double v) { return String.format("%.1f", v); }
+
     /** Compute implied volatility */
     @PostMapping("/options/iv")
     public ResponseEntity<?> impliedVol(@RequestBody Map<String, Object> body) {

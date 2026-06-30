@@ -12,10 +12,7 @@ import { Banking } from "./pages/Banking";
 import { AIAdvisor } from "./pages/AIAdvisor";
 import { FIRE } from "./pages/FIRE";
 import { Settings } from "./pages/Settings";
-import { Patterns } from "./pages/Patterns";
-import { Seasonality } from "./pages/Seasonality";
-import { Options } from "./pages/Options";
-import { Backtest } from "./pages/Backtest";
+import { Opportunities } from "./pages/Opportunities";
 import { useLiveQuotes } from "./hooks/useLiveQuotes";
 
 export const NavContext = createContext({ page: "dashboard", setPage: () => {} });
@@ -52,10 +49,7 @@ function AppShell() {
     ai:          <AIAdvisor />,
     fire:        <FIRE />,
     settings:    <Settings />,
-    patterns:    <Patterns />,
-    seasonality: <Seasonality />,
-    options:     <Options />,
-    backtest:    <Backtest />,
+    opportunities: <Opportunities onNav={navigate} />,
   };
 
   return (

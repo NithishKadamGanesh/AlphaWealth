@@ -1,7 +1,6 @@
 import {
   LayoutDashboard, TrendingUp, Briefcase, LineChart, Wallet,
-  Puzzle, CalendarDays, Scale, FlaskConical,
-  Sparkles, Target, Settings as SettingsIcon, Search, Moon, Sun, X,
+  Zap, Sparkles, Target, Settings as SettingsIcon, Search, Moon, Sun, X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "../lib/cn";
@@ -16,10 +15,7 @@ const NAV = [
   { id: "markets",   icon: LineChart,       label: "Markets",   live: true },
   { id: "banking",   icon: Wallet,          label: "Banking" },
   { section: "Research" },
-  { id: "patterns",    icon: Puzzle,        label: "Patterns" },
-  { id: "seasonality", icon: CalendarDays,  label: "Seasonality" },
-  { id: "options",     icon: Scale,         label: "Options" },
-  { id: "backtest",    icon: FlaskConical,  label: "Backtest" },
+  { id: "opportunities", icon: Zap, label: "Opportunities" },
   { section: "Tools" },
   { id: "ai",        icon: Sparkles,        label: "AI Advisor" },
   { id: "fire",      icon: Target,          label: "FIRE" },
