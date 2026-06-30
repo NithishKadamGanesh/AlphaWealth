@@ -8,6 +8,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -138,6 +139,7 @@ class NetWorthAggregator {
     private final ManualAssetRepository manualAssetRepo;
     private final ManualLiabilityRepository manualLiabRepo;
     private final ObjectMapper mapper;
+    private final KafkaTemplate<String, String> kafka;
 
     // In-memory caches updated by Kafka listeners
     private final Map<String, BigDecimal> ibkrPositionValues = new ConcurrentHashMap<>();
@@ -265,8 +267,25 @@ class NetWorthAggregator {
     public NetWorthSnapshot snapshotNow() {
         NetWorthSnapshot snapshot = computeCurrent();
         snapshotRepo.save(snapshot);
+        publishSnapshot(snapshot);
         log.info("Saved net worth snapshot: ${}", snapshot.getNetWorth().setScale(2, RoundingMode.HALF_UP));
         return snapshot;
+    }
+
+    private void publishSnapshot(NetWorthSnapshot snapshot) {
+        try {
+            kafka.send("net.worth.snapshots", "total", mapper.writeValueAsString(Map.of(
+                    "timestamp", snapshot.getTimestamp(),
+                    "totalAssets", snapshot.getTotalAssets(),
+                    "totalLiabilities", snapshot.getTotalLiabilities(),
+                    "netWorth", snapshot.getNetWorth(),
+                    "cash", snapshot.getCash(),
+                    "investments", snapshot.getInvestments(),
+                    "source", "net-worth-svc"
+            )));
+        } catch (Exception e) {
+            log.warn("Failed to publish net worth snapshot: {}", e.getMessage());
+        }
     }
 }
 

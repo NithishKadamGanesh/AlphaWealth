@@ -26,6 +26,10 @@ model:
   inference:
     url: ${MODEL_INFERENCE_URL:http://localhost:8090}
 
+services:
+  cpp-engine: ${CPP_ENGINE_URL:http://cpp-signal-engine:9000}
+  cpp-zmq: ${CPP_ZMQ_URL:tcp://cpp-signal-engine:5555}
+
 analysis:
   scheduler:
     initial-delay-ms: ${ANALYSIS_SCHEDULER_INITIAL_DELAY_MS:30000}

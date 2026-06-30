@@ -338,6 +338,9 @@ class BankingController {
         for (var acc : accounts()) {
             kafka.send("teller.balances", (String) acc.get("id"), mapper.writeValueAsString(acc));
         }
+        for (var tx : transactions(30)) {
+            kafka.send("banking.transactions", String.valueOf(tx.get("id")), mapper.writeValueAsString(tx));
+        }
     }
 
     private List<Map<String, Object>> loadAccountsCache() {

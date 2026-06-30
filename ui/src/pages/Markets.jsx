@@ -11,6 +11,7 @@ import {
   X, Plus,
 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { ForecastWidget } from "../components/ForecastWidget";
 
 const ANALYSIS_URL  = import.meta.env.VITE_ANALYSIS_URL  || "http://localhost:8088";
 const LIVE_DATA_URL = import.meta.env.VITE_LIVE_DATA_URL || "http://localhost:8096";
@@ -19,6 +20,7 @@ const BACKTEST_URL  = import.meta.env.VITE_BACKTEST_URL  || "http://localhost:80
 
 const DEFAULT_WATCHLIST = ["AAPL","NVDA","MSFT","AMZN","TSLA","GOOGL","META","AMD","SPY","QQQ"];
 const WATCHLIST_KEY = "aw_markets_watchlist";
+const SELECTED_SYMBOL_KEY = "aw_markets_selected_symbol";
 
 function loadWatchlist() {
   try {
@@ -26,6 +28,14 @@ function loadWatchlist() {
     if (Array.isArray(saved) && saved.length) return saved.filter(Boolean);
   } catch { /* ignore */ }
   return DEFAULT_WATCHLIST;
+}
+
+function loadSelectedSymbol() {
+  try {
+    const saved = String(localStorage.getItem(SELECTED_SYMBOL_KEY) || "").trim().toUpperCase();
+    if (/^[A-Z0-9.\-]{1,8}$/.test(saved)) return saved;
+  } catch { /* ignore */ }
+  return "AAPL";
 }
 
 // Timeframes: label shown to user, yfinance period, interval
@@ -896,14 +906,24 @@ function AIMemoTab({ sym, full }) {
   }, [sym, full]);
 
   return (
-    <div className="px-3 py-2.5">
-      {!memo && !loading && (
-        <button onClick={generate} className="px-3 py-1 text-xs bg-accent text-white rounded hover:bg-accent/90">
-          Generate AI Memo
-        </button>
-      )}
-      {loading && <div className="text-muted text-xs animate-pulse">Generating…</div>}
-      {memo && <p className="text-xs text-ink leading-relaxed">{memo}</p>}
+    <div className="px-3 py-2.5 space-y-3">
+      <ForecastWidget symbol={sym} />
+
+      <div className="bg-surface rounded-lg border border-line p-3">
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <div>
+            <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono">AI Research Memo</div>
+            <div className="text-2xs text-muted mt-0.5">Uses the current chart evidence, C++ signals, patterns, levels, and regime.</div>
+          </div>
+          {!memo && !loading && (
+            <button onClick={generate} className="px-3 py-1 text-xs bg-accent text-white rounded hover:bg-accent/90">
+              Generate
+            </button>
+          )}
+        </div>
+        {loading && <div className="text-muted text-xs animate-pulse">Generating...</div>}
+        {memo && <p className="text-xs text-ink leading-relaxed">{memo}</p>}
+      </div>
     </div>
   );
 }
@@ -924,7 +944,7 @@ export function Markets() {
   const candleDataRef = useRef([]);  // latest OHLC for series swaps
   const rangeStore    = useRef({});  // saved visible ranges per sym|period
 
-  const [sym,          setSym]         = useState("AAPL");
+  const [sym,          setSym]         = useState(loadSelectedSymbol);
   const [searchVal,    setSearchVal]   = useState("");
   const [periodIdx,    setPeriodIdx]   = useState(5);  // 1Y default
   const [indicators,   setIndicators]  = useState({ sma20: false, ema9: false, vwap: false });
@@ -933,7 +953,11 @@ export function Markets() {
   const [logScale,     setLogScale]    = useState(false);
   const [showTargets,  setShowTargets] = useState(false);
   const [showMarkers,  setShowMarkers] = useState(true);
-  const [watchlist,    setWatchlist]   = useState(loadWatchlist);
+  const [watchlist,    setWatchlist]   = useState(() => {
+    const selected = loadSelectedSymbol();
+    const saved = loadWatchlist();
+    return saved.includes(selected) ? saved : [selected, ...saved];
+  });
   const [addVal,       setAddVal]      = useState("");
   const [quotes,       setQuotes]      = useState({});
   const [full,         setFull]        = useState(null);
@@ -1148,10 +1172,30 @@ export function Markets() {
 
   const quote = quotes[sym] || null;
 
-  // ── Persist watchlist edits ──
+  // ── Watchlist: Postgres is the source of truth, localStorage is the offline fallback ──
+  const watchlistHydrated = useRef(false);
+  useEffect(() => {
+    fetch(`${ANALYSIS_URL}/api/analysis/watchlist`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(list => { if (Array.isArray(list) && list.length) setWatchlist(list); })
+      .catch(() => { /* backend unreachable → keep localStorage list */ })
+      .finally(() => { watchlistHydrated.current = true; });
+  }, []);
+
+  // Persist edits: localStorage always (instant/offline), PUT to Postgres once hydrated
   useEffect(() => {
     try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist)); } catch { /* ignore */ }
+    if (!watchlistHydrated.current) return;
+    fetch(`${ANALYSIS_URL}/api/analysis/watchlist`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols: watchlist }),
+    }).catch(() => { /* offline → localStorage already holds the edit */ });
   }, [watchlist]);
+
+  useEffect(() => {
+    try { if (sym) localStorage.setItem(SELECTED_SYMBOL_KEY, sym); } catch { /* ignore */ }
+  }, [sym]);
 
   const addTicker = useCallback((raw, { select = false } = {}) => {
     const v = String(raw || "").trim().toUpperCase();

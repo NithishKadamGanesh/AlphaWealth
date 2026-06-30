@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { T } from "../lib/tokens";
 import { Icon } from "../components/Icon";
 import { Card } from "../components/ui/Card";
@@ -7,7 +7,7 @@ import { PageHeader } from "../components/ui/PageHeader";
 import { Button } from "../components/ui/Button";
 import { BrokerConnections } from "../components/BrokerConnections";
 import { AvatarUploader } from "../components/AvatarUploader";
-import { cn } from "../lib/cn";
+import { cn, fmtMoney } from "../lib/cn";
 import {
   getDisplayName, setDisplayName,
   getFireTarget,  setFireTarget,
@@ -18,6 +18,7 @@ import {
 const AI_ADVISOR_URL = import.meta.env.VITE_AI_ADVISOR_URL || "http://localhost:8094";
 const SENTIMENT_URL  = import.meta.env.VITE_SENTIMENT_URL  || "http://localhost:8097";
 const FINGPT_URL     = import.meta.env.VITE_FINGPT_URL     || "http://localhost:8098";
+const ALERTS_URL     = import.meta.env.VITE_ALERTS_URL     || "http://localhost:8095";
 
 const PROVIDER_META = {
   claude: { name: "Anthropic Claude", variant: "warning",  icon: "sparkle", env: "ANTHROPIC_API_KEY" },
@@ -42,6 +43,13 @@ const SERVICES = [
   { name: "cpp-signal-engine", port: 9000, type: "core", desc: "Native C++ indicators" },
 ];
 
+const ALERT_TYPE_LABELS = {
+  price_above: "Price above",
+  price_below: "Price below",
+  budget_exceed: "Budget spend",
+  net_worth_change: "Net worth cross",
+};
+
 export const Settings = () => {
   const [providers, setProviders] = useState(null);
   const [healthMap, setHealthMap] = useState({});
@@ -54,6 +62,15 @@ export const Settings = () => {
   const [fireTargetInput, setFireTargetInput] = useState(() => String(getFireTarget()));
   const [apiTokenInput, setApiTokenInput] = useState(() => getApiToken());
   const [profileSaved, setProfileSaved] = useState(false);
+  const [alertRules, setAlertRules] = useState([]);
+  const [alertHistory, setAlertHistory] = useState([]);
+  const [alertsStatus, setAlertsStatus] = useState("idle");
+  const [alertForm, setAlertForm] = useState({
+    name: "AAPL price alert",
+    type: "price_above",
+    target: "AAPL",
+    threshold: "200",
+  });
 
   useEffect(() => {
     fetch(`${AI_ADVISOR_URL}/providers`)
@@ -81,7 +98,59 @@ export const Settings = () => {
     probeGpu(FINGPT_URL).then(d => setGpuStatus(s => ({ ...s, fingpt: d })));
   }, []);
 
+  const refreshAlerts = useCallback(async () => {
+    setAlertsStatus("loading");
+    try {
+      const [rulesRes, historyRes] = await Promise.all([
+        fetch(`${ALERTS_URL}/alerts/rules`, { signal: AbortSignal.timeout(5000) }),
+        fetch(`${ALERTS_URL}/alerts/history`, { signal: AbortSignal.timeout(5000) }),
+      ]);
+      setAlertRules(rulesRes.ok ? await rulesRes.json() : []);
+      setAlertHistory(historyRes.ok ? await historyRes.json() : []);
+      setAlertsStatus("ready");
+    } catch {
+      setAlertRules([]);
+      setAlertHistory([]);
+      setAlertsStatus("error");
+    }
+  }, []);
+
+  useEffect(() => { refreshAlerts(); }, [refreshAlerts]);
+
   const setProvider = (key) => { setActiveProvider(key); localStorage.setItem("alphawealth.provider", key); };
+
+  const createAlertRule = async () => {
+    const threshold = Number(alertForm.threshold);
+    if (!alertForm.name.trim() || !alertForm.target.trim() || !Number.isFinite(threshold)) return;
+    setAlertsStatus("saving");
+    try {
+      const res = await fetch(`${ALERTS_URL}/alerts/rules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: alertForm.name.trim(),
+          type: alertForm.type,
+          target: alertForm.target.trim().toUpperCase(),
+          threshold,
+          enabled: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await refreshAlerts();
+    } catch {
+      setAlertsStatus("error");
+    }
+  };
+
+  const deleteAlertRule = async (id) => {
+    setAlertsStatus("saving");
+    try {
+      await fetch(`${ALERTS_URL}/alerts/rules/${id}`, { method: "DELETE" });
+      await refreshAlerts();
+    } catch {
+      setAlertsStatus("error");
+    }
+  };
 
   const healthyCount = Object.values(healthMap).filter(s => s === "healthy").length;
   const gpuName = gpuStatus.sentiment?.gpu || gpuStatus.fingpt?.gpu;
@@ -165,6 +234,118 @@ export const Settings = () => {
         <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-3">Broker Connections</div>
         <BrokerConnections />
       </div>
+
+      {/* Alerts */}
+      <Card className="animate-fade-in">
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+          <div className="lg:w-[320px]">
+            <div className="text-xs uppercase tracking-wider text-subtle font-medium font-mono mb-4 flex items-center gap-2">
+              <Icon name="bell" size={11} color={T.muted} /> Alerts
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              <label className="block">
+                <div className="text-2xs text-zinc-500 font-mono mb-1">NAME</div>
+                <input
+                  value={alertForm.name}
+                  onChange={(e) => setAlertForm(f => ({ ...f, name: e.target.value }))}
+                  className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent"
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <div className="text-2xs text-zinc-500 font-mono mb-1">TYPE</div>
+                  <select
+                    value={alertForm.type}
+                    onChange={(e) => setAlertForm(f => ({ ...f, type: e.target.value }))}
+                    className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent"
+                  >
+                    {Object.entries(ALERT_TYPE_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <div className="text-2xs text-zinc-500 font-mono mb-1">TARGET</div>
+                  <input
+                    value={alertForm.target}
+                    onChange={(e) => setAlertForm(f => ({ ...f, target: e.target.value }))}
+                    className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-sm font-mono uppercase focus:outline-none focus:border-accent"
+                  />
+                </label>
+              </div>
+              <label className="block">
+                <div className="text-2xs text-zinc-500 font-mono mb-1">THRESHOLD</div>
+                <input
+                  type="number"
+                  value={alertForm.threshold}
+                  onChange={(e) => setAlertForm(f => ({ ...f, threshold: e.target.value }))}
+                  className="w-full bg-canvas border border-line rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent"
+                />
+              </label>
+              <div className="flex gap-2">
+                <Button onClick={createAlertRule} disabled={alertsStatus === "saving"} className="gap-1.5">
+                  <Icon name="plus" size={12} /> Create alert
+                </Button>
+                <Button variant="secondary" onClick={refreshAlerts} disabled={alertsStatus === "loading"}>
+                  Refresh
+                </Button>
+              </div>
+              {alertsStatus === "error" && <Tag variant="negative">alerts-svc unavailable</Tag>}
+            </div>
+          </div>
+
+          <div className="flex-1 grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div>
+              <div className="text-2xs uppercase tracking-wider text-subtle font-medium font-mono mb-2">Rules</div>
+              <div className="space-y-2">
+                {alertRules.length === 0 && (
+                  <div className="text-sm text-muted bg-canvas border border-line rounded-lg p-4">No alert rules yet.</div>
+                )}
+                {alertRules.map(rule => (
+                  <div key={rule.id} className="bg-canvas border border-line rounded-lg p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold text-sm text-ink">{rule.name}</div>
+                        <div className="text-xs text-muted mt-1">
+                          {ALERT_TYPE_LABELS[rule.type] || rule.type} · {rule.target} · {fmtMoney(Number(rule.threshold || 0))}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => deleteAlertRule(rule.id)}
+                        className="text-xs text-negative hover:text-negative/80 px-2 py-1 rounded-md hover:bg-negative/10"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    <div className="mt-2">
+                      <Tag variant={rule.enabled ? "positive" : "default"}>{rule.enabled ? "Enabled" : "Disabled"}</Tag>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-2xs uppercase tracking-wider text-subtle font-medium font-mono mb-2">Recent Triggers</div>
+              <div className="space-y-2">
+                {alertHistory.length === 0 && (
+                  <div className="text-sm text-muted bg-canvas border border-line rounded-lg p-4">No triggered alerts yet.</div>
+                )}
+                {alertHistory.slice(0, 8).map(event => (
+                  <div key={event.id} className="bg-canvas border border-line rounded-lg p-3">
+                    <div className="text-sm text-ink">{event.message}</div>
+                    <div className="flex items-center gap-2 mt-2 text-2xs text-muted font-mono">
+                      <span>{event.triggeredAt ? new Date(event.triggeredAt).toLocaleString() : "recent"}</span>
+                      <span>{fmtMoney(Number(event.currentValue || 0))}</span>
+                      <Tag variant={event.emailSent ? "positive" : "default"}>{event.emailSent ? "Email sent" : "Logged"}</Tag>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
 
       {/* GPU Status */}
       <Card className={cn("animate-fade-in", gpuOnDevice ? "bg-ink text-white border-ink" : "")}>

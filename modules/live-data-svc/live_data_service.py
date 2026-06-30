@@ -19,6 +19,7 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import asyncio
+import json
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -98,16 +99,52 @@ _bars_cache_ttl = 300      # seconds
 _fear_greed_ttl = 900      # seconds
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
+PANDAPROXY_URL = os.getenv("PANDAPROXY_URL", "").strip().rstrip("/")
 DB_HOST = os.getenv("DB_HOST", "postgres")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "alphawealth")
 DB_USER = os.getenv("DB_USER", "alphatrade")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "alphatrade123")
 _news_schema_ready = False
+_pandaproxy_disabled = False
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _publish_kafka_record(topic: str, key: str, value: dict) -> None:
+    global _pandaproxy_disabled
+    if _pandaproxy_disabled or not PANDAPROXY_URL:
+        return
+    try:
+        res = requests.post(
+            f"{PANDAPROXY_URL}/topics/{topic}",
+            headers={"Content-Type": "application/vnd.kafka.json.v2+json"},
+            data=json.dumps({"records": [{"key": key, "value": value}]}, default=str),
+            timeout=1.0,
+        )
+        if res.status_code >= 300:
+            log.debug("Pandaproxy publish to %s returned HTTP %s: %s", topic, res.status_code, res.text[:200])
+    except Exception as exc:
+        _pandaproxy_disabled = True
+        log.warning("Pandaproxy publishing disabled: %s", exc)
+
+
+def _publish_market_tick(quote: dict) -> None:
+    try:
+        symbol = quote.get("symbol", "")
+        _publish_kafka_record("market.ticks", symbol, {
+            "symbol": quote.get("symbol"),
+            "price": quote.get("price"),
+            "change": quote.get("change"),
+            "changePct": quote.get("change_pct"),
+            "volume": quote.get("volume"),
+            "timestamp": quote.get("timestamp") or datetime.now().isoformat(),
+            "source": "live-data-svc",
+        })
+    except Exception as exc:
+        log.debug("Failed to publish market tick for %s: %s", quote.get("symbol"), exc)
 
 
 def _parse_date(value: str | None, default: date) -> date:
@@ -341,12 +378,16 @@ def _fetch_quote_sync(symbol: str) -> dict:
     cached = _quote_cache.get(cache_key)
     if _cache_is_fresh(cached, _quote_cache_ttl):
         _metric_inc(QUOTE_CACHE_HITS)
-        return cached["data"]
+        data = cached["data"]
+        _publish_market_tick(data)
+        return data
 
     _metric_inc(QUOTE_CACHE_MISSES)
     try:
         data = _quote_from_chart(symbol, _fetch_yahoo_chart(symbol, "5d", "1d"))
-        return _cache_put(_quote_cache, cache_key, data)
+        data = _cache_put(_quote_cache, cache_key, data)
+        _publish_market_tick(data)
+        return data
     except Exception as e:
         _metric_inc(UPSTREAM_FETCH_ERRORS)
         if cached:

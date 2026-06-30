@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Alerts Service — single-file Spring Boot module
@@ -106,6 +107,9 @@ class AlertsController {
     private String fromAddress;
     @Value("${alert.to:}")
     private String toAddress;
+
+    private static final Duration DEDUP_WINDOW = Duration.ofMinutes(30);
+    private final Map<Long, Instant> lastTriggeredAt = new ConcurrentHashMap<>();
 
     AlertsController(AlertRuleRepository ruleRepo, AlertEventRepository eventRepo,
                      WebClient webClient, ObjectMapper mapper) {
@@ -203,13 +207,21 @@ class AlertsController {
     }
 
     private void triggerAlert(AlertRule rule, String message, BigDecimal value) {
+        Instant now = Instant.now();
+        Instant last = lastTriggeredAt.get(rule.getId());
+        if (last != null && Duration.between(last, now).compareTo(DEDUP_WINDOW) < 0) {
+            log.debug("Skipping duplicate alert {} within {} minutes", rule.getId(), DEDUP_WINDOW.toMinutes());
+            return;
+        }
+        lastTriggeredAt.put(rule.getId(), now);
+
         boolean emailSent = sendEmail(rule.getName(), message);
         AlertEvent event = AlertEvent.builder()
                 .ruleId(rule.getId())
                 .message(message)
                 .currentValue(value)
                 .emailSent(emailSent)
-                .triggeredAt(Instant.now())
+                .triggeredAt(now)
                 .build();
         eventRepo.save(event);
         log.info("Alert triggered: {} (email_sent={})", message, emailSent);

@@ -85,7 +85,11 @@ public class AnalysisController {
     public ResponseEntity<?> indicators(@PathVariable String symbol) {
         List<Candle> c = getCachedCandles(symbol);
         if (c.isEmpty()) return noData(symbol);
-        return ResponseEntity.ok(indicatorEngine.computeAll(c));
+        Map<String, Object> nativeIndicators = fetchNativeIndicators(symbol.toUpperCase(), c);
+        if (nativeIndicators != null) return ResponseEntity.ok(nativeIndicators);
+        Map<String, Object> fallback = new LinkedHashMap<>(indicatorEngine.computeAll(c));
+        fallback.put("source", "java-analysis-svc");
+        return ResponseEntity.ok(fallback);
     }
 
     @GetMapping("/{symbol}/patterns")
@@ -113,6 +117,8 @@ public class AnalysisController {
     public ResponseEntity<?> signal(@PathVariable String symbol) {
         List<Candle> c = getCachedCandles(symbol);
         if (c.isEmpty()) return noData(symbol);
+        Map<String, Object> nativeSignal = fetchNativeSignal(symbol.toUpperCase(), c);
+        if (nativeSignal != null) return ResponseEntity.ok(nativeSignal);
         return ResponseEntity.ok(signalGenerator.generate(symbol.toUpperCase(), c));
     }
 
@@ -124,6 +130,8 @@ public class AnalysisController {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("symbol", sym); r.put("candles", c.size());
         r.put("signal", signalGenerator.generate(sym, c));
+        r.put("nativeSignal", fetchNativeSignal(sym, c));
+        r.put("lorentzian", fetchLorentzian(sym, c));
         r.put("patterns", patternDetector.detectAll(c));
         r.put("levels", srDetector.detect(c));
         r.put("seasonality", seasonalityEngine.analyze(c));
@@ -309,7 +317,27 @@ public class AnalysisController {
             if (!candles.isEmpty()) data.put(sym.toUpperCase(), candles);
         }
         if (data.size() < 2) return ResponseEntity.badRequest().body(Map.of("error", "Need at least 2 symbols with data"));
+        Map<String, Object> nativeRisk = fetchNativePortfolioRisk(data);
+        if (nativeRisk != null) return ResponseEntity.ok(nativeRisk);
         return ResponseEntity.ok(portfolioOptimizer.optimize(data));
+    }
+
+    /** Native C++ portfolio risk endpoint. Body: { "symbols":["AAPL","MSFT"], "weights":{"AAPL":0.5,"MSFT":0.5} } */
+    @PostMapping("/portfolio/risk-native")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<?> nativePortfolioRisk(@RequestBody Map<String, Object> body) {
+        List<String> symbols = (List<String>) body.getOrDefault("symbols", List.of("AAPL", "MSFT", "GOOGL"));
+        Map<String, Object> weights = (Map<String, Object>) body.getOrDefault("weights", Map.of());
+        Map<String, List<Candle>> data = new LinkedHashMap<>();
+        for (String sym : symbols) {
+            List<Candle> candles = getCachedCandles(sym.toUpperCase());
+            if (!candles.isEmpty()) data.put(sym.toUpperCase(), candles);
+        }
+        if (data.size() < 2) return ResponseEntity.badRequest().body(Map.of("error", "Need at least 2 symbols with data"));
+        Map<String, Object> nativeRisk = fetchNativePortfolioRisk(data, weights);
+        return nativeRisk != null
+            ? ResponseEntity.ok(nativeRisk)
+            : ResponseEntity.status(503).body(Map.of("error", "cpp-signal-engine unavailable"));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -397,6 +425,10 @@ public class AnalysisController {
         double days = optionDays(body, 30);
         double rate = ((Number) body.getOrDefault("riskFreeRate", 0.05)).doubleValue();
         double vol = ((Number) body.getOrDefault("volatility", 0.3)).doubleValue();
+        Map<String, Object> nativePrice = cppPostMap("/options/price", Map.of(
+            "type", type, "spot", spot, "strike", strike, "days", days, "rate", rate, "volatility", vol
+        ), 3);
+        if (nativePrice != null) return ResponseEntity.ok(nativePrice);
         return ResponseEntity.ok(optionsEngine.price(type, spot, strike, days, vol, rate));
     }
 
@@ -437,7 +469,12 @@ public class AnalysisController {
             brief.put("symbol", sym);
             brief.put("generatedAt", Instant.now().toString());
 
-            try { brief.put("signal",      signalGenerator.generate(sym, candles));         } catch (Exception e) { brief.put("signal", null); }
+            try {
+                Map<String, Object> nativeSignal = fetchNativeSignal(sym, candles);
+                brief.put("signal", nativeSignal != null ? nativeSignal : signalGenerator.generate(sym, candles));
+                brief.put("nativeSignal", nativeSignal);
+            } catch (Exception e) { brief.put("signal", null); }
+            try { brief.put("lorentzian", fetchLorentzian(sym, candles));                  } catch (Exception e) { brief.put("lorentzian", null); }
             try { brief.put("patterns",    patternDetector.detectAll(candles));             } catch (Exception e) { brief.put("patterns", List.of()); }
             try { brief.put("levels",      srDetector.detect(candles));                     } catch (Exception e) { brief.put("levels", Map.of()); }
             try { brief.put("seasonality", seasonalityEngine.analyze(candles));             } catch (Exception e) { brief.put("seasonality", Map.of()); }
@@ -451,7 +488,11 @@ public class AnalysisController {
             } catch (Exception e) { brief.put("weeklySignal", null); }
 
             // Regime via C++ proxy
-            try { brief.put("regime", fetchRegime(candles)); } catch (Exception e) { brief.put("regime", null); }
+            try {
+                Map<String, Object> regimeDetail = fetchRegimeDetail(candles);
+                brief.put("regimeDetail", regimeDetail);
+                brief.put("regime", regimeDetail != null ? regimeDetail.get("regime") : null);
+            } catch (Exception e) { brief.put("regime", null); }
 
             // Verdict based on aggregated signals
             brief.put("verdict", deriveVerdict(brief));
@@ -492,29 +533,138 @@ public class AnalysisController {
     }
 
     private String fetchRegime(List<Candle> candles) {
-        if (candles.size() < 25) return null;
-        try {
-            StringBuilder closes = new StringBuilder("[");
-            for (int i = 0; i < candles.size(); i++) {
-                if (i > 0) closes.append(",");
-                closes.append(candles.get(i).close());
-            }
-            closes.append("]");
-            String body = "{\"closes\":" + closes + "}";
+        Map<String, Object> detail = fetchRegimeDetail(candles);
+        return detail != null ? String.valueOf(detail.get("regime")) : null;
+    }
 
+    private Map<String, Object> fetchRegimeDetail(List<Candle> candles) {
+        if (candles.size() < 25) return null;
+        return cppPostMap("/regime", Map.of("closes", closes(candles)), 3);
+    }
+
+    private Map<String, Object> fetchNativeIndicators(String symbol, List<Candle> candles) {
+        Map<String, Object> out = cppPostMap("/indicators", candlePayload(symbol, candles), 3);
+        if (out == null) return null;
+        out.put("symbol", symbol.toUpperCase());
+        out.put("source", "cpp-signal-engine");
+        out.put("rsi", out.get("rsi_14"));
+        out.put("macdSummary", Map.of(
+            "macd", out.getOrDefault("macd", 0),
+            "signal", out.getOrDefault("macd_signal", 0),
+            "histogram", out.getOrDefault("macd_histogram", 0)
+        ));
+        return out;
+    }
+
+    private Map<String, Object> fetchNativeSignal(String symbol, List<Candle> candles) {
+        Map<String, Object> out = cppPostMap("/signals/compute", candlePayload(symbol, candles), 4);
+        if (out == null) return null;
+        out.put("source", "cpp-signal-engine");
+        return out;
+    }
+
+    private Map<String, Object> fetchLorentzian(String symbol, List<Candle> candles) {
+        Map<String, Object> payload = candlePayload(symbol, candles);
+        payload.put("k", 8);
+        payload.put("horizon", 4);
+        Map<String, Object> out = cppPostMap("/classifiers/lorentzian", payload, 5);
+        if (out == null) return null;
+        out.put("source", "cpp-signal-engine");
+        return out;
+    }
+
+    private Map<String, Object> fetchNativePortfolioRisk(Map<String, List<Candle>> data) {
+        return fetchNativePortfolioRisk(data, Map.of());
+    }
+
+    private Map<String, Object> fetchNativePortfolioRisk(Map<String, List<Candle>> data, Map<String, Object> weights) {
+        List<Map<String, Object>> assets = new ArrayList<>();
+        for (var e : data.entrySet()) {
+            Map<String, Object> asset = new LinkedHashMap<>();
+            asset.put("symbol", e.getKey().toUpperCase());
+            asset.put("closes", closes(e.getValue()));
+            Object w = weights.get(e.getKey());
+            if (w instanceof Number n) asset.put("weight", n.doubleValue());
+            assets.add(asset);
+        }
+        Map<String, Object> nativeRisk = cppPostMap("/risk/portfolio", Map.of("assets", assets), 8);
+        if (nativeRisk == null) return null;
+        nativeRisk.put("source", "cpp-signal-engine");
+
+        Object nativeAssets = nativeRisk.get("assets");
+        if (nativeAssets instanceof List<?> list) {
+            List<Map<String, Object>> uiWeights = new ArrayList<>();
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> a)) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                Object symbolObj = a.get("symbol");
+                Object suggestedWeight = a.get("suggestedWeight") != null ? a.get("suggestedWeight") : a.get("weight");
+                row.put("symbol", symbolObj == null ? "?" : String.valueOf(symbolObj));
+                row.put("weight", asDouble(suggestedWeight));
+                row.put("expectedReturn", asDouble(a.get("expectedReturn")));
+                row.put("volatility", asDouble(a.get("volatility")));
+                row.put("riskContribution", asDouble(a.get("riskContribution")));
+                uiWeights.add(row);
+            }
+            nativeRisk.put("weights", uiWeights);
+            nativeRisk.put("nativeAssets", nativeAssets);
+        }
+        return nativeRisk;
+    }
+
+    private Map<String, Object> cppPostMap(String path, Map<String, Object> payload, int timeoutSeconds) {
+        try {
             HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(cppEngineUrl + "/regime"))
+                .uri(URI.create(cppEngineUrl + path))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(3))
-                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
                 .build();
             HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200) {
-                JsonNode node = mapper.readTree(resp.body());
-                return node.path("regime").asText(null);
+                return mapper.convertValue(mapper.readTree(resp.body()), Map.class);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.debug("C++ POST {} failed: {}", path, e.getMessage());
+        }
         return null;
+    }
+
+    private Map<String, Object> candlePayload(String symbol, List<Candle> candles) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("symbol", symbol.toUpperCase());
+        payload.put("dates", candles.stream().map(Candle::date).toList());
+        payload.put("opens", candles.stream().map(Candle::open).toList());
+        payload.put("highs", candles.stream().map(Candle::high).toList());
+        payload.put("lows", candles.stream().map(Candle::low).toList());
+        payload.put("closes", closes(candles));
+        payload.put("volumes", candles.stream().map(c -> (double) c.volume()).toList());
+        return payload;
+    }
+
+    private List<Double> closes(List<Candle> candles) {
+        return candles.stream().map(Candle::close).toList();
+    }
+
+    private List<String> symbolsFrom(Object raw) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if (raw instanceof List<?> list) {
+            for (Object item : list) addSymbol(out, item);
+        } else if (raw instanceof String s) {
+            for (String item : s.split("[,\\s]+")) addSymbol(out, item);
+        } else {
+            addSymbol(out, raw);
+        }
+        return out.stream().limit(100).toList();
+    }
+
+    private void addSymbol(Set<String> symbols, Object raw) {
+        String sym = String.valueOf(raw == null ? "" : raw).trim().toUpperCase();
+        if (sym.matches("[A-Z0-9.\\-]{1,10}")) symbols.add(sym);
+    }
+
+    private double asDouble(Object value) {
+        return value instanceof Number n ? n.doubleValue() : 0.0;
     }
 
     /**
@@ -529,6 +679,13 @@ public class AnalysisController {
             @RequestParam(defaultValue = "0.3")  double vol,
             @RequestParam(defaultValue = "0.05") double rate,
             @RequestParam(defaultValue = "35")   double dte) {
+
+        Map<String, Object> nativeIdeas = cppPostMap("/options/strategies", Map.of(
+            "symbol", symbol.toUpperCase(), "spot", spot, "volatility", vol, "rate", rate, "dte", dte
+        ), 3);
+        if (nativeIdeas != null && nativeIdeas.get("ideas") instanceof List<?> ideas && !ideas.isEmpty()) {
+            return ResponseEntity.ok(ideas);
+        }
 
         double step = spot > 200 ? 5 : spot > 50 ? 2.5 : 1;
         double atm  = Math.round(spot / step) * step;
@@ -667,8 +824,63 @@ public class AnalysisController {
         double days = optionDays(body, 30);
         double rate = dbl(body, "rate", 0.05);
         double marketPrice = dbl(body, "marketPrice", 5.0);
+        Map<String, Object> nativeIv = cppPostMap("/options/iv", Map.of(
+            "type", type, "spot", spot, "strike", strike, "days", days, "rate", rate, "marketPrice", marketPrice
+        ), 3);
+        if (nativeIv != null) return ResponseEntity.ok(nativeIv);
         double iv = optionsEngine.impliedVolatility(type, marketPrice, spot, strike, days, rate);
         return ResponseEntity.ok(Map.of("days", days, "impliedVolatility", iv, "ivPercent", Math.round(iv * 10000.0) / 100.0));
+    }
+
+    /** Native Lorentzian classification for a symbol. */
+    @GetMapping("/{symbol}/lorentzian")
+    public ResponseEntity<?> lorentzian(@PathVariable String symbol) {
+        List<Candle> c = getCachedCandles(symbol);
+        if (c.isEmpty()) return noData(symbol);
+        Map<String, Object> nativeLorentzian = fetchLorentzian(symbol.toUpperCase(), c);
+        return nativeLorentzian != null
+            ? ResponseEntity.ok(nativeLorentzian)
+            : ResponseEntity.status(503).body(Map.of("error", "cpp-signal-engine unavailable"));
+    }
+
+    /** Native C++ scanner for a watchlist. Body: { "symbols":["AAPL","NVDA"] } */
+    @PostMapping("/opportunities/native-scan")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<?> nativeOpportunityScan(@RequestBody Map<String, Object> body) {
+        List<String> symbols = symbolsFrom(body.getOrDefault("symbols", List.of("AAPL", "MSFT", "NVDA", "AMZN", "TSLA")));
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (String sym : symbols) {
+            List<Candle> candles = getCachedCandles(sym);
+            if (!candles.isEmpty()) items.add(candlePayload(sym, candles));
+        }
+        if (items.isEmpty()) return ResponseEntity.badRequest().body(Map.of("error", "No symbols had candle data"));
+        Map<String, Object> nativeScan = cppPostMap("/scan/batch", Map.of("items", items), 15);
+        return nativeScan != null
+            ? ResponseEntity.ok(nativeScan)
+            : ResponseEntity.status(503).body(Map.of("error", "cpp-signal-engine unavailable"));
+    }
+
+    /** Native C++ backtest. */
+    @GetMapping("/{symbol}/backtest/native")
+    public ResponseEntity<?> nativeBacktest(
+            @PathVariable String symbol,
+            @RequestParam(defaultValue = "LORENTZIAN") String strategy,
+            @RequestParam(defaultValue = "10000") double capital,
+            @RequestParam(defaultValue = "0.95") double positionPct,
+            @RequestParam(defaultValue = "1.0") double commission,
+            @RequestParam(defaultValue = "5.0") double slippageBps) {
+        List<Candle> c = getCachedCandles(symbol);
+        if (c.isEmpty()) return noData(symbol);
+        Map<String, Object> payload = candlePayload(symbol.toUpperCase(), c);
+        payload.put("strategy", strategy);
+        payload.put("capital", capital);
+        payload.put("positionPct", positionPct);
+        payload.put("commission", commission);
+        payload.put("slippageBps", slippageBps);
+        Map<String, Object> nativeBacktest = cppPostMap("/backtest", payload, 10);
+        return nativeBacktest != null
+            ? ResponseEntity.ok(nativeBacktest)
+            : ResponseEntity.status(503).body(Map.of("error", "cpp-signal-engine unavailable"));
     }
 
     /** Analyze an options strategy payoff */

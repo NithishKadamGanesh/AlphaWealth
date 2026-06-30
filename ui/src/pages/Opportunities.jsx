@@ -16,6 +16,7 @@ const BACKTEST_URL  = import.meta.env.VITE_BACKTEST_URL  || "http://localhost:80
 
 const DEFAULT_WATCHLIST = ["AAPL","NVDA","MSFT","AMZN","TSLA","GOOGL","META","AMD","SPY","QQQ","PLTR","ARM"];
 const DECISIONS_KEY     = "aw_opportunity_decisions";
+const MARKET_SELECTED_SYMBOL_KEY = "aw_markets_selected_symbol";
 
 function signalColor(val = "") {
   const v = val.toLowerCase();
@@ -35,7 +36,7 @@ function pctValue(value, digits = 1) {
 
 // ── Scoring ──────────────────────────────────────────────────────────────────
 
-function computeScore({ sym, full, quote, sentimentScore, ibkrPositions, cashBalance, earningsData, companyData, optionsIdeasCount }) {
+function computeScore({ sym, full, quote, sentimentScore, ibkrPositions, cashBalance, earningsData, companyData, optionsIdeasCount, nativeScan }) {
   const signal      = full.signal || full.blendedSignal || {};
   const bias        = String(signal.bias || signal.direction || signal.action || "NEUTRAL").toUpperCase();
   const rawConfidence = Number(signal.confidence ?? signal.score ?? 0.5);
@@ -54,6 +55,22 @@ function computeScore({ sym, full, quote, sentimentScore, ibkrPositions, cashBal
   const evidence   = [];
   const contradictions = [];
   const portfolio  = [];
+
+  // Native C++ scanner / Lorentzian evidence
+  if (nativeScan) {
+    const nativeScore = Number(nativeScan.score);
+    if (Number.isFinite(nativeScore)) {
+      score += (nativeScore - 50) * 0.35;
+      if (nativeScore >= 65) evidence.push(`C++ scanner score ${nativeScore.toFixed(0)}/100`);
+      if (nativeScore <= 40) contradictions.push(`C++ scanner weak (${nativeScore.toFixed(0)}/100)`);
+    }
+    const lor = nativeScan.lorentzian || full.lorentzian;
+    const lorAction = String(lor?.action || "").toUpperCase();
+    const lorConf = Number(lor?.confidence || 0);
+    if (lorAction === "BUY") evidence.push(`Lorentzian BUY (${(lorConf * 100).toFixed(0)}%)`);
+    if (lorAction === "SELL") contradictions.push(`Lorentzian SELL (${(lorConf * 100).toFixed(0)}%)`);
+    if (Array.isArray(nativeScan.riskFlags)) contradictions.push(...nativeScan.riskFlags.slice(0, 2));
+  }
 
   // 1. Trend / Signal
   const isBull = bias.includes("BULL") || bias === "BUY" || bias === "STRONG_BUY";
@@ -170,7 +187,7 @@ function computeScore({ sym, full, quote, sentimentScore, ibkrPositions, cashBal
     direction = "Neutral"; setup = "Covered call / income candidate"; action = "Watch";
   }
 
-  return { sym, score, direction, setup, action, risk, evidence, contradictions, portfolio, bias, confidence, full, quote };
+  return { sym, score, direction, setup, action, risk, evidence, contradictions, portfolio, bias, confidence, full, quote, nativeScan };
 }
 
 // ── Research Brief Modal ──────────────────────────────────────────────────────
@@ -681,8 +698,9 @@ export function Opportunities({ onNav }) {
     abortRef.current = abort;
     setScanning(true); setIdeas([]); setProgress({ done: 0, total: symbols.length });
 
-    // Fetch IBKR positions + banking cash for portfolio context (best-effort)
+    // Fetch IBKR positions + banking cash + native C++ scanner for context (best-effort)
     let ibkrPositions = [], cashBalance = null;
+    let nativeBySymbol = {};
     try {
       const ibkrRes = await fetch(`${IBKR_URL}/ibkr/positions`, { signal: abort.signal });
       if (ibkrRes.ok) { const d = await ibkrRes.json(); ibkrPositions = Array.isArray(d) ? d : d.positions || []; }
@@ -693,6 +711,19 @@ export function Opportunities({ onNav }) {
         const d = await bankRes.json();
         const accounts = Array.isArray(d) ? d : d.accounts || [];
         cashBalance = accounts.reduce((sum, acc) => sum + Number(acc.balance || acc.available || 0), 0);
+      }
+    } catch {}
+    try {
+      const nativeRes = await fetch(`${ANALYSIS_URL}/api/analysis/opportunities/native-scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abort.signal,
+        body: JSON.stringify({ symbols }),
+      });
+      if (nativeRes.ok) {
+        const d = await nativeRes.json();
+        const nativeResults = Array.isArray(d) ? d : d.results || [];
+        nativeBySymbol = Object.fromEntries(nativeResults.map(item => [item.symbol || item.sym, item]));
       }
     } catch {}
 
@@ -720,7 +751,10 @@ export function Opportunities({ onNav }) {
         const optionsIdeasCount   = Array.isArray(optIdeas) ? optIdeas.length : (optIdeas?.ideas?.length ?? 0);
 
         if (full) {
-          results.push(computeScore({ sym, full, quote, sentimentScore, ibkrPositions, cashBalance, earningsData, companyData, optionsIdeasCount }));
+          results.push(computeScore({
+            sym, full, quote, sentimentScore, ibkrPositions, cashBalance, earningsData, companyData,
+            optionsIdeasCount, nativeScan: nativeBySymbol[sym]
+          }));
         }
       } catch (e) {
         if (e.name === "AbortError") break;
@@ -759,6 +793,7 @@ export function Opportunities({ onNav }) {
   }
 
   function handleViewChart(sym) {
+    try { localStorage.setItem(MARKET_SELECTED_SYMBOL_KEY, sym); } catch {}
     onNav?.("markets");
   }
 

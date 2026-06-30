@@ -126,6 +126,8 @@ services:
     environment:
       MARKETDATA_URL: http://live-data-svc:8096
       MODEL_INFERENCE_URL: http://model-svc:8090
+      CPP_ENGINE_URL: http://cpp-signal-engine:9000
+      CPP_ZMQ_URL: tcp://cpp-signal-engine:5555
       DB_URL: jdbc:postgresql://postgres:5432/alphawealth
       DB_USER: alphatrade
       DB_PASS: alphatrade123
@@ -134,6 +136,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       live-data-svc: { condition: service_started }
+      cpp-signal-engine: { condition: service_started }
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8088/health || exit 1"]
@@ -216,6 +219,8 @@ services:
     environment:
       API_TOKEN: ${API_TOKEN:-}
       FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      KAFKA_BOOTSTRAP: redpanda:9092
+      PANDAPROXY_URL: http://redpanda:8082
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: alphawealth
@@ -224,6 +229,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8096/health')\" >/dev/null 2>&1 || exit 1"]

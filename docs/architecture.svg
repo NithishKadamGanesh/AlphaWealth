@@ -1,0 +1,171 @@
+<svg viewBox="0 0 1300 960" xmlns="http://www.w3.org/2000/svg" font-family="'Comic Sans MS','Comic Neue','Segoe Print','Bradley Hand','Chalkboard SE',cursive">
+  <defs>
+    <filter id="rough" x="-3%" y="-3%" width="106%" height="106%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="2" seed="11" result="t"/>
+      <feDisplacementMap in="SourceGraphic" in2="t" scale="2.3" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <marker id="aBlue" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#1C6FBF"/></marker>
+    <marker id="aGreen" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2F9E44"/></marker>
+    <marker id="aMag" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#C2255C"/></marker>
+    <marker id="aBlack" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#343A40"/></marker>
+    <marker id="aPurple" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6741D9"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1300" height="960" fill="#FBFBF6"/>
+
+  <!-- ===================== SHAPES (hand-drawn) ===================== -->
+  <g filter="url(#rough)" stroke-linecap="round" stroke-linejoin="round">
+    <!-- note: no trade execution -->
+    <rect x="1010" y="22" width="268" height="52" rx="10" fill="#F0EBFB" stroke="#6741D9" stroke-width="2"/>
+
+    <!-- user glyph -->
+    <circle cx="78" cy="158" r="15" fill="#F0EBFB" stroke="#6741D9" stroke-width="2"/>
+    <path d="M58,200 q20,-28 40,0" fill="#F0EBFB" stroke="#6741D9" stroke-width="2"/>
+    <line x1="105" y1="178" x2="195" y2="172" stroke="#6741D9" stroke-width="2" marker-end="url(#aPurple)"/>
+
+    <!-- UI box -->
+    <rect x="205" y="120" width="690" height="82" rx="12" fill="#F0EBFB" stroke="#6741D9" stroke-width="2.5"/>
+
+    <!-- UI -> groups -->
+    <line x1="360" y1="202" x2="340" y2="248" stroke="#1C6FBF" stroke-width="2" marker-end="url(#aBlue)"/>
+    <line x1="740" y1="202" x2="800" y2="248" stroke="#1C6FBF" stroke-width="2" marker-end="url(#aBlue)"/>
+
+    <!-- Java group container -->
+    <rect x="40" y="250" width="600" height="300" rx="14" fill="none" stroke="#1C6FBF" stroke-width="2" stroke-dasharray="9 7"/>
+    <!-- java services -->
+    <rect x="60"  y="322" width="132" height="50" rx="9" fill="#E7F0FB" stroke="#1C6FBF" stroke-width="2"/>
+    <rect x="204" y="322" width="132" height="50" rx="9" fill="#E7F0FB" stroke="#1C6FBF" stroke-width="2"/>
+    <rect x="348" y="322" width="138" height="50" rx="9" fill="#E7F0FB" stroke="#1C6FBF" stroke-width="2"/>
+    <rect x="498" y="322" width="124" height="50" rx="9" fill="#E7F0FB" stroke="#1C6FBF" stroke-width="2.5"/>
+    <rect x="60"  y="398" width="132" height="50" rx="9" fill="#E7F0FB" stroke="#1C6FBF" stroke-width="2"/>
+    <rect x="204" y="398" width="132" height="50" rx="9" fill="#E7F0FB" stroke="#1C6FBF" stroke-width="2"/>
+    <rect x="348" y="398" width="138" height="50" rx="9" fill="#E7F0FB" stroke="#1C6FBF" stroke-width="2"/>
+    <!-- RAG sticky -->
+    <rect x="60" y="466" width="426" height="70" rx="6" fill="#FFF3BF" stroke="#E6B800" stroke-width="2"/>
+
+    <!-- Python group container -->
+    <rect x="660" y="250" width="430" height="300" rx="14" fill="none" stroke="#2F9E44" stroke-width="2" stroke-dasharray="9 7"/>
+    <rect x="680" y="322" width="190" height="50" rx="9" fill="#E8F7EC" stroke="#2F9E44" stroke-width="2"/>
+    <rect x="884" y="322" width="186" height="50" rx="9" fill="#E8F7EC" stroke="#2F9E44" stroke-width="2"/>
+    <rect x="680" y="398" width="190" height="50" rx="9" fill="#E8F7EC" stroke="#2F9E44" stroke-width="2"/>
+    <rect x="884" y="398" width="186" height="50" rx="9" fill="#E8F7EC" stroke="#2F9E44" stroke-width="2"/>
+
+    <!-- analysis -> live-data (service flow) -->
+    <path d="M622,352 C660,360 660,344 680,346" fill="none" stroke="#2F9E44" stroke-width="2" marker-end="url(#aGreen)"/>
+    <!-- ai-advisor -> python (consumes) -->
+    <path d="M340,448 C520,470 660,440 680,420" fill="none" stroke="#2F9E44" stroke-width="1.8" stroke-dasharray="2 5" marker-end="url(#aGreen)"/>
+
+    <!-- C++ engine -->
+    <rect x="660" y="600" width="430" height="118" rx="12" fill="#FCE7F0" stroke="#C2255C" stroke-width="2.5"/>
+    <!-- analysis <-> cpp (HTTP) + ZMQ stream -->
+    <path d="M560,372 C560,520 720,560 770,598" fill="none" stroke="#C2255C" stroke-width="2" marker-end="url(#aMag)"/>
+    <path d="M860,598 C860,560 600,540 560,448" fill="none" stroke="#C2255C" stroke-width="1.8" stroke-dasharray="2 5" marker-end="url(#aMag)"/>
+
+    <!-- External providers -->
+    <rect x="1110" y="250" width="170" height="468" rx="14" fill="none" stroke="#E8590C" stroke-width="2" stroke-dasharray="9 7"/>
+    <rect x="1128" y="300" width="134" height="38" rx="8" fill="#FFF0E6" stroke="#E8590C" stroke-width="2"/>
+    <rect x="1128" y="352" width="134" height="38" rx="8" fill="#FFF0E6" stroke="#E8590C" stroke-width="2"/>
+    <rect x="1128" y="404" width="134" height="38" rx="8" fill="#FFF0E6" stroke="#E8590C" stroke-width="2"/>
+    <rect x="1128" y="456" width="134" height="38" rx="8" fill="#FFF0E6" stroke="#E8590C" stroke-width="2"/>
+    <rect x="1128" y="520" width="134" height="38" rx="8" fill="#FFF0E6" stroke="#E8590C" stroke-width="2"/>
+    <rect x="1128" y="572" width="134" height="38" rx="8" fill="#FFF0E6" stroke="#E8590C" stroke-width="2"/>
+    <rect x="1128" y="624" width="134" height="38" rx="8" fill="#FFF0E6" stroke="#E8590C" stroke-width="2"/>
+    <!-- providers -> services (data) -->
+    <path d="M1128,319 C1060,326 1090,392 1072,406" fill="none" stroke="#343A40" stroke-width="1.6" marker-end="url(#aBlack)"/>
+    <path d="M1128,423 C1080,430 1090,410 1072,414" fill="none" stroke="#343A40" stroke-width="1.6" marker-end="url(#aBlack)"/>
+    <path d="M1128,475 C1060,480 1010,360 975,352" fill="none" stroke="#343A40" stroke-width="1.6" marker-end="url(#aBlack)"/>
+    <!-- LLM providers -> ai-advisor -->
+    <path d="M1128,591 C900,600 470,520 340,452" fill="none" stroke="#343A40" stroke-width="1.4" stroke-dasharray="1 5" marker-end="url(#aBlack)"/>
+
+    <!-- Infra band -->
+    <rect x="40" y="760" width="1050" height="150" rx="14" fill="none" stroke="#0C8599" stroke-width="2" stroke-dasharray="9 7"/>
+    <rect x="60"  y="788" width="150" height="64" rx="9" fill="#E2FAFC" stroke="#0C8599" stroke-width="2"/>
+    <rect x="225" y="788" width="158" height="64" rx="9" fill="#E2FAFC" stroke="#0C8599" stroke-width="2"/>
+    <rect x="398" y="788" width="150" height="64" rx="9" fill="#E2FAFC" stroke="#0C8599" stroke-width="2" stroke-dasharray="4 4"/>
+    <rect x="563" y="788" width="150" height="64" rx="9" fill="#E2FAFC" stroke="#0C8599" stroke-width="2"/>
+    <rect x="728" y="788" width="150" height="64" rx="9" fill="#E2FAFC" stroke="#0C8599" stroke-width="2"/>
+    <rect x="893" y="788" width="150" height="64" rx="9" fill="#E2FAFC" stroke="#0C8599" stroke-width="2"/>
+    <!-- services -> infra -->
+    <line x1="300" y1="550" x2="300" y2="786" stroke="#1C6FBF" stroke-width="2" marker-end="url(#aBlue)"/>
+    <line x1="300" y1="668" x2="300" y2="668" stroke="#1C6FBF" stroke-width="0"/>
+    <line x1="770" y1="718" x2="500" y2="786" stroke="#1C6FBF" stroke-width="2" marker-end="url(#aBlue)"/>
+    <line x1="980" y1="448" x2="980" y2="786" stroke="#1C6FBF" stroke-width="1.6" stroke-dasharray="2 5" marker-end="url(#aBlue)"/>
+    <!-- ollama -> python (fingpt/ai) -->
+    <path d="M638,820 C500,840 980,470 1006,450" fill="none" stroke="#0C8599" stroke-width="0"/>
+
+    <!-- legend box -->
+    <rect x="1010" y="788" width="270" height="124" rx="10" fill="#FFFFFF" stroke="#868E96" stroke-width="1.6"/>
+    <line x1="1028" y1="816" x2="1066" y2="816" stroke="#1C6FBF" stroke-width="2" marker-end="url(#aBlue)"/>
+    <line x1="1028" y1="842" x2="1066" y2="842" stroke="#2F9E44" stroke-width="2" marker-end="url(#aGreen)"/>
+    <line x1="1028" y1="868" x2="1066" y2="868" stroke="#C2255C" stroke-width="2" stroke-dasharray="2 4" marker-end="url(#aMag)"/>
+    <line x1="1028" y1="894" x2="1066" y2="894" stroke="#343A40" stroke-width="2" marker-end="url(#aBlack)"/>
+  </g>
+
+  <!-- ===================== TEXT (crisp) ===================== -->
+  <g fill="#1F2933">
+    <text x="650" y="56" text-anchor="middle" font-size="36" font-weight="bold">AlphaWealth — System Architecture</text>
+    <text x="650" y="88" text-anchor="middle" font-size="17" fill="#6B7280">Self-hosted personal finance + market-intelligence platform · monitoring only, no trade execution</text>
+
+    <text x="1144" y="44" font-size="13" fill="#6741D9">📊 Monitoring &amp; analytics only —</text>
+    <text x="1144" y="62" font-size="13" fill="#6741D9">no orders are ever placed</text>
+
+    <text x="78" y="142" text-anchor="middle" font-size="16" fill="#6741D9" font-weight="bold">User</text>
+
+    <text x="550" y="155" text-anchor="middle" font-size="24" font-weight="bold" fill="#6741D9">React + Vite UI</text>
+    <text x="550" y="184" text-anchor="middle" font-size="13" fill="#5B4BB0">Dashboard · Net Worth · Portfolio · Markets · Banking · Opportunities · AI Advisor · FIRE · Settings</text>
+
+    <!-- Java group -->
+    <text x="340" y="278" text-anchor="middle" font-size="19" font-weight="bold" fill="#1C6FBF">Core Java Microservices</text>
+    <text x="340" y="300" text-anchor="middle" font-size="12.5" fill="#5C6370">Spring Boot · the control layer (REST, orchestration, business logic)</text>
+    <text x="126" y="344" text-anchor="middle" font-size="12.5" font-weight="bold">net-worth-svc</text><text x="126" y="361" text-anchor="middle" font-size="10.5" fill="#5C6370">:8093</text>
+    <text x="270" y="344" text-anchor="middle" font-size="12.5" font-weight="bold">ibkr-sync-svc</text><text x="270" y="361" text-anchor="middle" font-size="10.5" fill="#5C6370">:8091</text>
+    <text x="417" y="344" text-anchor="middle" font-size="12.5" font-weight="bold">teller-banking</text><text x="417" y="361" text-anchor="middle" font-size="10.5" fill="#5C6370">:8092</text>
+    <text x="560" y="344" text-anchor="middle" font-size="12.5" font-weight="bold">analysis-svc</text><text x="560" y="361" text-anchor="middle" font-size="10.5" fill="#5C6370">:8088 · C++ gateway</text>
+    <text x="126" y="420" text-anchor="middle" font-size="12.5" font-weight="bold">backtest-svc</text><text x="126" y="437" text-anchor="middle" font-size="10.5" fill="#5C6370">:8089</text>
+    <text x="270" y="420" text-anchor="middle" font-size="12.5" font-weight="bold">ai-advisor-svc</text><text x="270" y="437" text-anchor="middle" font-size="10.5" fill="#5C6370">:8094 · RAG</text>
+    <text x="417" y="420" text-anchor="middle" font-size="12.5" font-weight="bold">alerts-svc</text><text x="417" y="437" text-anchor="middle" font-size="10.5" fill="#5C6370">:8095</text>
+    <text x="273" y="488" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#8A6D00">RAG context builder</text>
+    <text x="273" y="506" text-anchor="middle" font-size="10.5" fill="#7A6000">portfolio · banking · net worth · analysis</text>
+    <text x="273" y="522" text-anchor="middle" font-size="10.5" fill="#7A6000">sentiment · C++ regime · FinGPT forecasts</text>
+
+    <!-- Python group -->
+    <text x="875" y="278" text-anchor="middle" font-size="19" font-weight="bold" fill="#2F9E44">Python AI / Data Services</text>
+    <text x="875" y="300" text-anchor="middle" font-size="12.5" fill="#5C6370">Python · GPU · the lab (data ingestion, NLP, ML)</text>
+    <text x="775" y="344" text-anchor="middle" font-size="12.5" font-weight="bold">live-data-svc</text><text x="775" y="361" text-anchor="middle" font-size="10.5" fill="#5C6370">:8096 · quotes·history·news</text>
+    <text x="977" y="344" text-anchor="middle" font-size="12.5" font-weight="bold">sentiment-svc</text><text x="977" y="361" text-anchor="middle" font-size="10.5" fill="#5C6370">:8097 · FinBERT (GPU)</text>
+    <text x="775" y="420" text-anchor="middle" font-size="12.5" font-weight="bold">fingpt-svc</text><text x="775" y="437" text-anchor="middle" font-size="10.5" fill="#5C6370">:8098 · forecaster (GPU)</text>
+    <text x="977" y="420" text-anchor="middle" font-size="12.5" font-weight="bold">model-svc</text><text x="977" y="437" text-anchor="middle" font-size="10.5" fill="#5C6370">:8090 · research / ML</text>
+
+    <!-- C++ engine -->
+    <text x="875" y="630" text-anchor="middle" font-size="20" font-weight="bold" fill="#C2255C">C++ Signal Engine — the quant brain</text>
+    <text x="875" y="656" text-anchor="middle" font-size="12.5" fill="#7A2447">indicators · Lorentzian classifier · market-regime · batch scan</text>
+    <text x="875" y="676" text-anchor="middle" font-size="12.5" fill="#7A2447">options pricing / IV / strategy screening · backtest · portfolio risk</text>
+    <text x="875" y="700" text-anchor="middle" font-size="12" fill="#A33" >HTTP :9000  ·  ZMQ signal stream :5555 → analysis-svc</text>
+
+    <!-- External providers -->
+    <text x="1195" y="278" text-anchor="middle" font-size="16" font-weight="bold" fill="#E8590C">External Providers</text>
+    <text x="1195" y="324" text-anchor="middle" font-size="13" font-weight="bold">IBKR</text>
+    <text x="1195" y="376" text-anchor="middle" font-size="13" font-weight="bold">Teller</text>
+    <text x="1195" y="428" text-anchor="middle" font-size="13" font-weight="bold">Yahoo Finance</text>
+    <text x="1195" y="480" text-anchor="middle" font-size="13" font-weight="bold">Finnhub (news)</text>
+    <text x="1195" y="544" text-anchor="middle" font-size="13" font-weight="bold">Claude</text>
+    <text x="1195" y="596" text-anchor="middle" font-size="13" font-weight="bold">OpenAI</text>
+    <text x="1195" y="648" text-anchor="middle" font-size="13" font-weight="bold">Gemini</text>
+    <text x="1195" y="700" text-anchor="middle" font-size="10.5" fill="#5C6370">data feeds + LLM providers</text>
+
+    <!-- Infra band -->
+    <text x="565" y="888" text-anchor="middle" font-size="15" font-weight="bold" fill="#0C8599">Shared Runtime / Infrastructure</text>
+    <text x="135" y="816" text-anchor="middle" font-size="12.5" font-weight="bold">Redpanda</text><text x="135" y="833" text-anchor="middle" font-size="10.5" fill="#5C6370">Kafka event bus</text>
+    <text x="304" y="816" text-anchor="middle" font-size="12.5" font-weight="bold">TimescaleDB</text><text x="304" y="833" text-anchor="middle" font-size="10.5" fill="#5C6370">Postgres · durable data</text>
+    <text x="473" y="814" text-anchor="middle" font-size="12.5" font-weight="bold">Redis</text><text x="473" y="831" text-anchor="middle" font-size="10" fill="#5C6370">cache · provisioned</text><text x="473" y="845" text-anchor="middle" font-size="9.5" fill="#A33">(not yet wired)</text>
+    <text x="638" y="816" text-anchor="middle" font-size="12.5" font-weight="bold">Ollama</text><text x="638" y="833" text-anchor="middle" font-size="10.5" fill="#5C6370">Llama 3.1 · local LLM</text>
+    <text x="803" y="816" text-anchor="middle" font-size="12.5" font-weight="bold">Prometheus</text><text x="803" y="833" text-anchor="middle" font-size="10.5" fill="#5C6370">metrics</text>
+    <text x="968" y="816" text-anchor="middle" font-size="12.5" font-weight="bold">Grafana</text><text x="968" y="833" text-anchor="middle" font-size="10.5" fill="#5C6370">dashboards</text>
+
+    <!-- legend -->
+    <text x="1075" y="820" font-size="11.5">data / events</text>
+    <text x="1075" y="846" font-size="11.5">service / logic flow</text>
+    <text x="1075" y="872" font-size="11.5">C++ HTTP + ZMQ stream</text>
+    <text x="1075" y="898" font-size="11.5">external feeds / LLMs</text>
+  </g>
+</svg>

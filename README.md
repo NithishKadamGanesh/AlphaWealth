@@ -4,6 +4,28 @@ AlphaWealth is a self-hosted personal finance and market research command center
 
 The app is designed for monitoring, research, and decision support. By default it does not place trades. Its job is to help you see your money clearly, understand what is moving markets, test ideas before trusting them, and ask an AI advisor questions using your own financial context.
 
+## Architecture
+
+<p align="center">
+  <img src="docs/architecture.svg" alt="AlphaWealth system architecture" width="100%">
+</p>
+
+AlphaWealth is a polyglot microservice stack — each language is used for what it is best at:
+
+| Layer | Tech | What it does here |
+|-------|------|-------------------|
+| **C++** — the quant brain | `cpp-signal-engine` | The fast, deterministic finance core: technical indicators, the Lorentzian classifier, market-regime classification, options pricing / implied vol / strategy screening, portfolio risk, batch scans across many tickers, and backtesting. Exposes HTTP on `:9000` and broadcasts signals over a ZMQ stream on `:5555`. Anything that needs speed, batching, or exact math lives here. |
+| **Java** — the control layer | Spring Boot services | Orchestration and stable production APIs: REST endpoints, wiring the UI to the C++/Python/data services, IBKR + banking + net-worth business logic, the AI advisor's RAG orchestration, alerting, and graceful fallbacks when a downstream service is down. |
+| **Python** — the lab | FastAPI / GPU services | Research and ML: yfinance/Finnhub data ingestion, FinBERT news sentiment, entity/ticker extraction, the FinGPT forecaster, and the research/model service. Where new strategies are prototyped before being moved into C++. |
+| **JavaScript / React** — the experience | React + Vite | The 9-page UI: charts, the Markets terminal, the Opportunities scanner, evidence panels, portfolio/banking views, and the AI advisor chat. It displays decisions, evidence, and controls — the heavy finance math lives in C++. |
+| **PostgreSQL / TimescaleDB** | durable data | Users' watchlists, stored signals, historical news metadata, net-worth snapshots, and time-series application data. |
+| **Kafka (Redpanda)** | event flow | Event bus for IBKR positions, banking transactions, net-worth snapshots, and "new signal" events — produced and consumed across services (`net.worth.snapshots`, `banking.transactions`, `ibkr.*`, `teller.balances`). |
+| **Redis** | fast cache | Provisioned for latest-price / scan-result caching and short-lived state. Reserved capacity — not yet wired into the services. |
+| **Ollama** | local LLM | Llama 3.1 served locally so the AI advisor works for free, with cloud providers (Claude / OpenAI / Gemini) as routed alternatives. |
+| **Prometheus + Grafana** | observability | Service health, latency, GPU/CPU/memory, and data-freshness dashboards. |
+
+> The diagram and tables describe a self-hosted, monitoring-and-analytics platform. **No orders are ever placed** — AlphaWealth reads and analyzes, it does not execute trades.
+
 ## Why This App Is Useful
 
 Most personal finance apps show only one slice of the picture: bank balances, brokerage holdings, budgets, or stock charts. AlphaWealth is useful because it connects those layers.
@@ -56,16 +78,29 @@ Why it helps:
 - IBKR integration allows the app to use real account data when the Client Portal Gateway is running.
 - When IBKR is unavailable, the app can keep showing the last-known snapshot instead of becoming useless.
 
-### Markets
+### Markets — charting terminal
 
-The Markets page provides live and historical market data, candles, technical overlays, support/resistance context, and recent detected patterns.
+The Markets page is a full charting terminal built on TradingView Lightweight Charts:
 
-Why it helps:
+- **Candlestick / bar / area / baseline** chart types with all timeframes (1D · 5D · 1M · 3M · 6M · 1Y · 5Y).
+- **Indicators** — SMA 20, EMA 9, VWAP overlays, plus **RSI and MACD in dedicated stacked panes**.
+- **On-chart context** — support/resistance lines, EMA/SMA crossover buy/sell markers, an entry/stop/target trade-plan overlay, a crosshair OHLC legend, log-scale toggle, and a symbol watermark.
+- **Editable watchlist** (persisted in Postgres, with a localStorage fallback) and ticker search.
+- **Evidence panel** — signal, momentum (RSI/MACD), key levels, patterns, seasonality, and the C++ market regime.
+- **Bottom tabs** — News (TradingView Top Stories), Consensus (TradingView technical gauge), Options ideas, Financials (your snapshot + TradingView fundamentals), Backtest, and an AI Memo.
+- A **Lite / Pro toggle** swaps the native chart for the full TradingView Advanced chart (drawing tools, Fibonacci, 100+ indicators).
+- A `dataMode` indicator (live / stale / simulated / error / disconnected) prevents mistaking fallback data for live data.
 
-- It gives you a fast visual read on price behavior without leaving the app.
-- It connects market movement to downstream research tools like sentiment, patterns, forecasts, and backtests.
-- The data mode indicator helps prevent mistaking fallback or stale data for live data.
-- It is useful for watchlist scanning, quick chart review, and deciding whether deeper research is worth doing.
+### Opportunities — explainable scanner
+
+The Opportunities page replaces the old separate Patterns / Seasonality / Options / Backtest pages with a single ranked, explainable scanner.
+
+- Scores each watchlist symbol across ~11 dimensions: trend/signal, momentum, volume/RVOL, support/resistance proximity, patterns, seasonality, news sentiment, catalyst/earnings risk, options liquidity, market regime, and the **native C++ scanner + Lorentzian classifier**.
+- Every idea card shows **why** — the supporting evidence, the contradictions, and portfolio-fit warnings — not just a number.
+- A **Research Brief** modal aggregates technical trend, price levels, earnings risk, volume/participation, options ideas, and recent news into a single verdict.
+- Trade decisions are persisted, and an **Intraday Flow** mode surfaces opening-RVOL movers with an ATR filter.
+
+Why it helps: it turns scattered chart intuition into one ranked, evidence-backed shortlist, so you spend research time only on the names that actually pass the screen.
 
 ### Banking & Spending
 
@@ -78,51 +113,6 @@ Why it helps:
 - Spending categories help identify where money is actually going.
 - Net cash flow helps distinguish healthy income from lifestyle drift.
 - The app can fall back to demo/seed data when Teller is not configured, so the UI remains usable while setting things up.
-
-### Research: Patterns
-
-The Patterns page scans for technical chart patterns and signal structures.
-
-Why it helps:
-
-- Patterns are useful as research clues, not guarantees.
-- Seeing detected patterns in one place helps you scan symbols faster.
-- Pattern data can be combined with sentiment, seasonality, and backtest results before making a decision.
-- It helps avoid trading from chart intuition alone by turning some chart behavior into structured signals.
-
-### Research: Seasonality
-
-The Seasonality page looks for calendar-based behavior in historical price data.
-
-Why it helps:
-
-- Some assets behave differently by month, week, or day of week.
-- Seasonality can help frame expectations, especially around recurring market cycles.
-- It is useful as a context layer for entries, exits, and risk sizing.
-- It should not be used alone, but it can strengthen or weaken a trade thesis.
-
-### Research: Options
-
-The Options page supports option pricing, Greeks, and strategy-style analysis.
-
-Why it helps:
-
-- Options are sensitive to volatility, time decay, and price movement. Looking only at premium is not enough.
-- Greeks help explain what risk you are actually taking.
-- Strategy views make it easier to compare risk/reward before entering a position.
-- It is useful for learning how options behave and for sanity-checking trade structures.
-
-### Research: Backtest
-
-The Backtest page lets you test strategy ideas on historical data. The backend includes built-in strategies, custom strategy DSL support, stop-loss/take-profit handling, walk-forward support, and Lorentzian Classification as an indicator.
-
-Why it helps:
-
-- A strategy that sounds good may fail under historical testing.
-- Backtesting gives you a baseline before risking real money.
-- Walk-forward testing is important because it reduces overfitting to one historical period.
-- The Lorentzian Classification indicator compares current market conditions against similar historical states without peeking into the future.
-- Backtests are research tools, not promises. They are most useful when combined with out-of-sample testing and conservative assumptions.
 
 ### AI Advisor
 
@@ -159,15 +149,21 @@ Why it helps:
 - It should be treated as research context, not a trading signal by itself.
 - The first request may download a large model, so the first run is slower than later runs.
 
-### Native C++ Signal Engine
+### Native C++ Signal Engine — the quant brain
 
-The C++ signal engine provides fast technical signal processing and market-regime style outputs.
+The C++ `cpp-signal-engine` is the fast, deterministic finance core. It exposes HTTP on `:9000` and broadcasts signals over a ZMQ stream on `:5555` (consumed by `analysis-svc`):
+
+- Technical indicators and the **Lorentzian classifier**.
+- **Market-regime classification** (BULL_TREND / BEAR_TREND / RANGING / HIGH_VOL).
+- **Options pricing, implied volatility, and strategy screening**.
+- **Portfolio risk and correlations**, and **batch scans** across many tickers.
+- **Backtesting** of strategy ideas on historical data.
 
 Why it helps:
 
-- Native code is useful for low-latency or compute-heavy signal work.
-- It keeps technical signal generation separate from the UI and Java/Python services.
-- The app can combine these signals with higher-level analysis and AI advisor context.
+- Native code keeps low-latency, compute-heavy, deterministic math out of the UI and the Java/Python services.
+- `analysis-svc` is a thin Java gateway in front of it, so the rest of the stack and the AI advisor consume native signals through normal REST.
+- It is the single source of the directional market signal used across the app.
 
 ### Alerts and Observability
 
@@ -179,38 +175,27 @@ Why it helps:
 - Prometheus and Grafana help you see whether services are healthy.
 - Metrics are useful because the app is made of many services; one broken service should be easy to identify.
 
-## Current Architecture
+## Service Map & Local URLs
 
-AlphaWealth runs as a Docker Compose stack.
-
-```text
-Browser UI
-  -> React frontend on port 3000
-  -> Java services for analysis, backtesting, net worth, banking, IBKR, alerts, AI advisor
-  -> Python services for live data, FinBERT sentiment, FinGPT forecasting, research models
-  -> C++ signal engine for fast technical signals
-  -> Postgres/TimescaleDB for stored financial and news data
-  -> Redpanda for event topics
-  -> Redis for cache-style infrastructure
-  -> Ollama for local LLM chat
-  -> Prometheus/Grafana for monitoring
-```
-
-Important local URLs:
+AlphaWealth runs as a Docker Compose stack — see the [architecture diagram](#architecture) above for how the pieces connect. Important local URLs:
 
 | Service | URL |
 |---|---|
-| Main app | http://localhost:3000 |
+| Main app (UI) | http://localhost:3000 |
 | Grafana | http://localhost:3001 |
 | Prometheus | http://localhost:9090 |
 | Live data service | http://localhost:8096/health |
-| Analysis service | http://localhost:8088/health |
+| Analysis service (C++ gateway) | http://localhost:8088/health |
 | Backtest service | http://localhost:8089/health |
-| Sentiment service | http://localhost:8097/health |
+| Sentiment service (FinBERT) | http://localhost:8097/health |
 | FinGPT service | http://localhost:8098/health |
 | AI Advisor service | http://localhost:8094/health |
+| Net-worth service | http://localhost:8093/health |
 | Teller banking service | http://localhost:8092/actuator/health |
 | IBKR sync service | http://localhost:8091/ibkr/status |
+| Alerts service | http://localhost:8095/health |
+| C++ signal engine | http://localhost:9000/health |
+| Ollama (local LLM) | http://localhost:11434/api/tags |
 
 For deeper service internals, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
