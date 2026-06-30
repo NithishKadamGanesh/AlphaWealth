@@ -24,7 +24,6 @@ AlphaWealth is a polyglot microservice stack — each language is used for what 
 | **Ollama** | local LLM | Llama 3.1 served locally so the AI advisor works for free, with cloud providers (Claude / OpenAI / Gemini) as routed alternatives. |
 | **Prometheus + Grafana** | observability | Service health, latency, GPU/CPU/memory, and data-freshness dashboards. |
 
-> The diagram and tables describe a self-hosted, monitoring-and-analytics platform. **No orders are ever placed** — AlphaWealth reads and analyzes, it does not execute trades.
 
 ## Why This App Is Useful
 
